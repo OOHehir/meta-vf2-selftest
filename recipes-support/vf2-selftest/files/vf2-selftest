@@ -1,0 +1,1071 @@
+#!/bin/sh
+# vf2-selftest: board self-test for the StarFive VisionFive 2 (JH7110), for
+# reporting what works with a given (typically mainline) kernel and for catching
+# regressions between kernels/patches.
+#
+# Every result states the level it reached and claims no more than that:
+#   probe     the DT node is enabled and a driver is bound to it
+#   function  the feature did something observable (data moved, value read back)
+# A FAIL carries a class, so it can be routed to the right place:
+#   config-off   no driver for the compatible in this kernel build
+#   not-loaded   driver is a module that exists but is not loaded
+#   deferred     probe deferred (reason from debugfs devices_deferred)
+#   probe-error  driver available but the device is not bound (see dmesg)
+#   function     bound, but the functional check failed
+#   log          error-level kernel log lines / taint
+# A SKIP says why: not-in-dt, disabled-in-dt, hw-absent, probe-failed, option.
+# Each result is followed by "# repro:" (how to check it by hand, without this
+# script) and "#  |" evidence lines (raw values the verdict was based on).
+#
+# Output: KTAP on stdout. -o DIR also writes DIR/{ktap.txt,results.tsv,report.md}.
+# Exit:   0 no failures, 1 failures (with --baseline: 1 only on regressions),
+#         2 usage error.
+# Usage:  vf2-selftest [-o DIR] [--baseline FILE] [--no-link] [--stress SECS] [-q]
+#         vf2-selftest --compare LABEL=results.tsv LABEL=results.tsv ...
+#   -o DIR          write ktap.txt, results.tsv and report.md into DIR
+#   --baseline F    compare with an earlier results.tsv; report regressions
+#   --no-link       SKIP Ethernet carrier/ping checks (no cables on the bench)
+#   --stress SECS   also run stress-ng CPU+memory for SECS, tracking temperature
+#   -q              results only on stdout (files still get everything)
+#   --compare ...   no testing: print a Markdown matrix of several runs (e.g.
+#                   vendor=v.tsv mainline=m.tsv). Runs anywhere, no root needed.
+
+set -u
+
+VERSION=1.0
+OUTDIR=""; BASELINE=""; NO_LINK=0; STRESS=0; QUIET=0; COMPARE=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o)         OUTDIR=${2:?-o needs a directory}; shift ;;
+        --baseline) BASELINE=${2:?--baseline needs a file}; shift ;;
+        --no-link)  NO_LINK=1 ;;
+        --stress)   STRESS=${2:?--stress needs seconds}; shift ;;
+        -q)         QUIET=1 ;;
+        --compare)  shift; COMPARE=1; break ;;
+        -h|--help)  sed -n '/^[^#]/q;2,$p' "$0"; exit 0 ;;
+        *)          echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+# --- --compare: side-by-side Markdown matrix of several results.tsv files ---
+if [ "$COMPARE" = 1 ]; then
+    [ $# -ge 2 ] || { echo "--compare needs at least two LABEL=results.tsv" >&2; exit 2; }
+    for a in "$@"; do
+        case "$a" in *=?*) ;; *) echo "bad --compare argument '$a' (want LABEL=FILE)" >&2; exit 2 ;; esac
+        [ -r "${a#*=}" ] || { echo "cannot read ${a#*=}" >&2; exit 2; }
+    done
+    # labels go via the environment (may contain spaces); files stay quoted
+    n=$#; labels=""
+    for a in "$@"; do labels="$labels${a%%=*}
+"; set -- "$@" "${a#*=}"; done
+    shift "$n"
+    VF2_LABELS=$labels awk -F'\t' '
+    function cell(c, id,   s) {
+        s = st[c, id]
+        if (s == "") return "–"
+        if (s == "PASS") return "PASS"
+        if (s == "FAIL") return "**FAIL** " cl[c, id]
+        return "skip: " cl[c, id]
+    }
+    BEGIN { split(ENVIRON["VF2_LABELS"], labs, "\n") }
+    FNR == 1 { nc++; lab[nc] = labs[nc] }
+    $1 == "#env" { env[nc, $2] = $3; next }
+    $1 ~ /^#/ { next }
+    {
+        if (!($1 in seen)) { seen[$1] = 1; ord[++nk] = $1 }
+        st[nc, $1] = $2; cl[nc, $1] = $4; det[nc, $1] = $5; cnt[nc, $2]++
+    }
+    END {
+        hdr = "| |"; sep = "|---|"
+        for (c = 1; c <= nc; c++) { hdr = hdr " " lab[c] " |"; sep = sep "---|" }
+        print "### VisionFive 2 self-test comparison\n"
+        print hdr; print sep
+        n = split("model kernel kernel.build sbi u-boot efi fdt.md5 kernel.config.md5 os date script", ek, " ")
+        for (i = 1; i <= n; i++) {
+            line = "| " ek[i] " |"
+            for (c = 1; c <= nc; c++) { v = env[c, ek[i]]; gsub(/\|/, "\\|", v); line = line " " (v == "" ? "–" : "`" v "`") " |" }
+            print line
+        }
+        line = "| **pass / fail / skip** |"
+        for (c = 1; c <= nc; c++) line = line " " cnt[c, "PASS"] + 0 " / " cnt[c, "FAIL"] + 0 " / " cnt[c, "SKIP"] + 0 " |"
+        print line
+
+        print "\n#### Differences (passes in at least one run, not in all)\n"
+        print hdr " " lab[1] " detail |"; print sep "---|"
+        nd = 0
+        for (k = 1; k <= nk; k++) {
+            id = ord[k]; np = 0
+            for (c = 1; c <= nc; c++) if (st[c, id] == "PASS") np++
+            if (np == 0 || np == nc) continue
+            line = "| `" id "` |"
+            for (c = 1; c <= nc; c++) line = line " " cell(c, id) " |"
+            d = det[1, id]; gsub(/\|/, "\\|", d)
+            print line " " d " |"; nd++
+        }
+        if (!nd) print "| (none) |"
+
+        print "\n#### All checks\n"
+        print hdr; print sep
+        for (k = 1; k <= nk; k++) {
+            id = ord[k]; line = "| `" id "` |"
+            for (c = 1; c <= nc; c++) line = line " " cell(c, id) " |"
+            print line
+        }
+        print "\n*probe* = DT node enabled + driver bound; *function* = feature observably worked. FAIL classes: config-off, not-loaded, deferred, probe-error, function, log. Per-check evidence and repro commands are in each run'"'"'s ktap.txt."
+    }' "$@"
+    exit $?
+fi
+
+[ "$(id -u)" = 0 ] || { echo "vf2-selftest: must run as root" >&2; exit 2; }
+[ -z "$BASELINE" ] || [ -r "$BASELINE" ] || { echo "cannot read baseline $BASELINE" >&2; exit 2; }
+
+TMP=$(mktemp -d /tmp/vf2-selftest.XXXXXX) || exit 2
+KTAP=$TMP/ktap.txt; RES=$TMP/results.tsv; ENVF=$TMP/env.tsv; UNDO=$TMP/undo
+DTIDX=$TMP/dt.idx; DEVIDX=$TMP/dev.idx
+: >"$KTAP"; : >"$RES"; : >"$ENVF"; : >"$UNDO"
+DBGFS_MOUNTED=0
+
+cleanup() {
+    # Restore anything a check changed (cpufreq limits, link state...), even if
+    # we were interrupted mid-check. Entries are idempotent; run newest first.
+    [ -s "$UNDO" ] && sed '1!G;h;$!d' "$UNDO" | sh 2>/dev/null
+    [ "$DBGFS_MOUNTED" = 1 ] && umount /sys/kernel/debug 2>/dev/null
+    rm -rf "$TMP"
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# --- Reporting ---
+N=0; P=0; F=0; S=0
+REPRO=""; EVID=""
+
+emit()  { printf '%s\n' "$*" >>"$KTAP"; printf '%s\n' "$*"; }
+diag()  { printf '%s\n' "$*" >>"$KTAP"; [ "$QUIET" = 1 ] || printf '%s\n' "$*"; }
+oneline() { printf '%s' "$*" | tr '\t\n' '  '; }
+
+# ev TEXT: queue evidence (may be multi-line) for the next result
+ev() { [ -n "$*" ] && EVID="${EVID}$*
+"; }
+# repro CMD: the command a maintainer can run by hand to check the next result
+repro() { REPRO=$*; }
+
+# res STATUS ID LEVEL CLASS DETAIL     STATUS = PASS | FAIL | SKIP
+res() {
+    st=$1; id=$2; lvl=$3; cls=$4; shift 4; det=$(oneline "$*")
+    N=$((N + 1))
+    case "$st" in
+        PASS) P=$((P + 1)); emit "ok $N $id"
+              diag "#   $lvl: $det" ;;
+        FAIL) F=$((F + 1)); emit "not ok $N $id"
+              diag "#   $lvl FAIL[$cls]: $det" ;;
+        SKIP) S=$((S + 1)); emit "ok $N $id # SKIP [$cls] $det" ;;
+    esac
+    [ -n "$REPRO" ] && diag "#   repro: $REPRO"
+    [ -n "$EVID" ] && printf '%s' "$EVID" | while IFS= read -r l; do diag "#    | $l"; done
+    printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$st" "$lvl" "$cls" "$det" >>"$RES"
+    REPRO=""; EVID=""
+}
+skip_fn() { res SKIP "$1" function probe-failed "${2:-probe check failed, see above}"; }
+
+envset() { v=$(oneline "$2"); printf '%s\t%s\n' "$1" "$v" >>"$ENVF"; diag "# env: $1 = $v"; }
+
+# --- Small helpers ---
+have() { command -v "$1" >/dev/null 2>&1; }
+rd()   { [ -r "$1" ] && tr -d '\0' <"$1" 2>/dev/null; }
+uptime_cs() { awk '{ printf "%d", $1 * 100 }' /proc/uptime; }
+PDT=/proc/device-tree
+MODDIR=/lib/modules/$(uname -r)
+
+kconfig() {   # kconfig CONFIG_FOO -> "y", "m" or "" (not set / unknown)
+    [ -r /proc/config.gz ] || return 0
+    zcat /proc/config.gz 2>/dev/null | sed -n "s/^$1=//p"
+}
+have_kconfig() { [ -r /proc/config.gz ]; }
+
+dmesg_raw() { dmesg -r 2>/dev/null || dmesg; }
+# kernel log lines mentioning a device (by sysfs name), newest last
+dmesg_for() { [ -n "$1" ] && dmesg 2>/dev/null | grep -F -- "$1" | tail -n "${2:-3}"; }
+
+# read_test DEV MiB -> sets RT_MBPS, returns dd status (read-only, page cache dropped)
+read_test() {
+    sync; echo 3 >/proc/sys/vm/drop_caches 2>/dev/null
+    t0=$(uptime_cs)
+    dd if="$1" of=/dev/null bs=1048576 count="$2" 2>/dev/null; rc=$?
+    t1=$(uptime_cs); dt=$((t1 - t0)); [ "$dt" -gt 0 ] || dt=1
+    RT_MBPS=$(awk -v n="$2" -v c="$dt" 'BEGIN { printf "%.1f", n * 100 / c }')
+    return $rc
+}
+
+# --- Device-tree / driver-model indexes (built once) ---
+#   dt.idx:  <node path> TAB okay|disabled TAB <compatibles...>
+#            (disabled if the node or any ancestor has status != okay)
+#   dev.idx: <node path> TAB <sysfs device dir> TAB <bound driver or empty>
+build_indexes() {
+    find "$PDT" -name compatible -type f 2>/dev/null | sort | while IFS= read -r f; do
+        n=${f%/compatible}; p=${n#"$PDT"}; [ -n "$p" ] || p=/
+        stt=okay; [ -r "$n/status" ] && stt=$(rd "$n/status")
+        printf '%s\t%s\t%s\n' "$p" "$stt" "$(tr '\0' ' ' <"$f")"
+    done | awk -F'\t' '{
+        dis = 0
+        for (i = 1; i <= k; i++) if (index($1, D[i] "/") == 1) dis = 1
+        if ($2 != "okay" && $2 != "ok") { D[++k] = $1; dis = 1 }
+        print $1 "\t" (dis ? "disabled" : "okay") "\t" $3
+    }' >"$DTIDX"
+
+    base=$(readlink -f /sys/firmware/devicetree/base)
+    find /sys/devices -name of_node 2>/dev/null | while IFS= read -r l; do
+        d=${l%/of_node}; node=$(readlink -f "$l"); node=${node#"$base"}
+        drv=""; [ -e "$d/driver" ] && drv=$(basename "$(readlink "$d/driver")")
+        printf '%s\t%s\t%s\n' "${node:-/}" "$d" "$drv"
+    done >"$DEVIDX"
+}
+
+# dt_find COMPAT [UNITADDR] -> "<node>\t<okay|disabled>" for the first match
+dt_find() {
+    awk -F'\t' -v c="$1" -v a="${2:-}" '{
+        n = split($3, cs, " ")
+        for (i = 1; i <= n; i++)
+            if (cs[i] == c && (a == "" || substr($1, length($1) - length(a)) == "@" a)) {
+                print $1 "\t" $2; exit
+            }
+    }' "$DTIDX"
+}
+# dev_of NODE -> "<sysfs dir>\t<driver>", preferring an entry with a driver bound
+dev_of() {
+    awk -F'\t' -v n="$1" '$1 == n { if ($3 != "") { print $2 "\t" $3; f = 1; exit } if (!d) d = $2 }
+        END { if (!f && d) print d "\t" }' "$DEVIDX"
+}
+
+# drv_avail COMPAT -> "module:<name>", "builtin:<name>" or ""
+drv_avail() {
+    m=$(awk -v c="$1" '$1 == "alias" { a = $2; sub(/C\*$/, "", a)
+            if (substr(a, length(a) - length(c)) == "C" c) { print $3; exit } }' \
+        "$MODDIR/modules.alias" 2>/dev/null)
+    [ -n "$m" ] && { echo "module:$m"; return; }
+    m=$(tr '\0' '\n' <"$MODDIR/modules.builtin.modinfo" 2>/dev/null | awk -v c="$1" '
+        { i = index($0, ".alias="); if (!i) next
+          a = substr($0, i + 7); sub(/C\*$/, "", a)
+          if (substr(a, length(a) - length(c)) == "C" c) { print substr($0, 1, i - 1); exit } }')
+    [ -n "$m" ] && echo "builtin:$m"
+}
+
+# classify COMPAT CONFIG DEVDIR -> sets CLASS and WHY for an unbound device
+classify() {
+    c=$1; cfg=$2; d=$3; name=${d##*/}
+    if [ -n "$name" ] && [ -r /sys/kernel/debug/devices_deferred ] &&
+       r=$(grep -F -- "$name" /sys/kernel/debug/devices_deferred) && [ -n "$r" ]; then
+        CLASS=deferred; WHY="probe deferred: $(oneline "$r" | sed "s/^$name[[:space:]]*//")"
+        return
+    fi
+    av=$(drv_avail "$c")
+    case "$av" in
+        module:*)
+            mod=${av#module:}
+            if grep -q "^$mod " /proc/modules 2>/dev/null; then
+                CLASS=probe-error; WHY="module $mod loaded but device not bound"
+            else
+                CLASS=not-loaded; WHY="module $mod exists for $c but is not loaded"
+            fi ;;
+        builtin:*)
+            CLASS=probe-error; WHY="built-in driver ${av#builtin:} did not bind" ;;
+        *)
+            v=""; [ -n "$cfg" ] && v=$(kconfig "$cfg")
+            if [ -n "$cfg" ] && have_kconfig && [ -z "$v" ]; then
+                CLASS=config-off; WHY="$cfg is not set (no driver for $c in this kernel)"
+            elif [ "$v" = m ]; then
+                CLASS=not-loaded; WHY="$cfg=m but no module providing $c is installed"
+            elif [ "$v" = y ]; then
+                CLASS=probe-error; WHY="$cfg=y but device not bound"
+            else
+                CLASS=config-off; WHY="no driver matching $c in modules.alias/modules.builtin.modinfo"
+            fi ;;
+    esac
+    [ -z "$d" ] && WHY="$WHY; no device was created for the node"
+}
+
+# probe_check ID COMPAT UNITADDR CONFIG DESC
+#   PASS if an enabled DT node with COMPAT (at UNITADDR, if given) has a bound
+#   driver. Sets NODE, DEV, DRV for follow-up function checks. Returns 0 on PASS.
+probe_check() {
+    pid=$1; pc=$2; pa=$3; pcfg=$4; pdesc=$5
+    NODE=""; DEV=""; DRV=""
+    l=$(dt_find "$pc" "$pa")
+    if [ -z "$l" ]; then
+        repro "find /proc/device-tree -name compatible | xargs grep -l '$pc'"
+        res SKIP "$pid" probe not-in-dt "$pdesc: no node compatible with \"$pc\"${pa:+ @$pa} in this DT"
+        return 1
+    fi
+    NODE=${l%%"	"*}
+    if [ "${l#*"	"}" = disabled ]; then
+        repro "cat /proc/device-tree$NODE/status"
+        res SKIP "$pid" probe disabled-in-dt "$pdesc: $NODE is disabled in the DT"
+        return 1
+    fi
+    dl=$(dev_of "$NODE")
+    DEV=${dl%%"	"*}; DRV=${dl#*"	"}; [ -n "$dl" ] || { DEV=""; DRV=""; }
+    if [ -n "$DRV" ]; then
+        repro "readlink $DEV/driver"
+        res PASS "$pid" probe "" "$pdesc: driver $DRV bound to $NODE"
+        return 0
+    fi
+    classify "$pc" "$pcfg" "$DEV"
+    if [ -n "$DEV" ]; then
+        repro "ls -l $DEV/driver; cat /sys/kernel/debug/devices_deferred"
+        ev "$(dmesg_for "${DEV##*/}")"
+    else
+        repro "zcat /proc/config.gz | grep ${pcfg:-<driver option>}; grep -F '$pc' $MODDIR/modules.alias"
+    fi
+    [ -n "$pcfg" ] && have_kconfig && ev "$pcfg=$(kconfig "$pcfg")"
+    res FAIL "$pid" probe "$CLASS" "$pdesc ($NODE): $WHY"
+    return 1
+}
+
+# first_compat "c1 c2 ..." -> first compatible present in the DT (for features
+# whose binding name is not settled upstream yet), or the first one given
+first_compat() {
+    for fc in $1; do [ -n "$(dt_find "$fc")" ] && { echo "$fc"; return; }; done
+    echo "${1%% *}"
+}
+
+# --- Environment: everything needed to reproduce the result ---
+if ! grep -q ' /sys/kernel/debug ' /proc/mounts; then
+    mount -t debugfs none /sys/kernel/debug 2>/dev/null && DBGFS_MOUNTED=1
+fi
+build_indexes
+
+emit "TAP version 13"
+diag "# vf2-selftest $VERSION"
+envset script "vf2-selftest $VERSION"
+envset date "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+envset model "$(rd $PDT/model)"
+envset dt.compatible "$(tr '\0' ' ' 2>/dev/null <$PDT/compatible)"
+envset serial "$(rd $PDT/serial-number)"
+envset kernel "$(uname -r)"
+envset kernel.build "$(uname -v)"
+envset kernel.version "$(cat /proc/version)"
+envset kernel.config.md5 "$( (zcat /proc/config.gz 2>/dev/null || echo none) | md5sum | cut -d' ' -f1)"
+envset fdt.md5 "$(md5sum /sys/firmware/fdt 2>/dev/null | cut -d' ' -f1)"
+envset cmdline "$(cat /proc/cmdline)"
+sbi=$(dmesg | sed -n 's/.*SBI implementation ID=\(0x[0-9a-f]*\) Version=\(0x[0-9a-f]*\).*/\1 \2/p' | head -n1)
+if [ -n "$sbi" ]; then
+    set -- $sbi
+    sv=$(($2)); simpl=$1; [ "$1" = 0x1 ] && simpl=OpenSBI
+    envset sbi "$simpl $((sv >> 16)).$((sv & 0xffff)), $(dmesg | sed -n 's/.*SBI specification \(v[0-9.]*\).*/\1/p' | head -n1)"
+fi
+envset u-boot "$(rd $PDT/chosen/u-boot,version)"
+envset efi "$([ -d /sys/firmware/efi ] && echo yes || echo no)"
+envset rootfs "$(awk '$2 == "/" { print $1 " (" $3 ")" }' /proc/mounts | tail -n1)"
+envset os "$(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-unknown}")"
+envset uptime "$(cut -d' ' -f1 /proc/uptime)s"
+
+# --- Board identity: everything below assumes a VisionFive 2 device tree ---
+model=$(rd $PDT/model)
+repro "cat /proc/device-tree/model /proc/device-tree/compatible"
+case "$(tr '\0' ' ' 2>/dev/null <$PDT/compatible)" in
+    *starfive,visionfive-2*) res PASS board.model probe "" "${model}" ;;
+    *) res FAIL board.model probe function "not a VisionFive 2 device tree (model='${model:-none}'); results below are not meaningful" ;;
+esac
+
+# --- Boot health ---
+ERRS=$(dmesg_raw | grep -E '^<[0-3]>')
+nerr=$(printf '%s' "$ERRS" | grep -c .)
+repro "dmesg -r | grep -E '^<[0-3]>'"
+ev "$(printf '%s\n' "$ERRS" | sed 's/^<[0-3]>//' | head -n 15)"
+if [ "$nerr" = 0 ]; then
+    res PASS boot.dmesg-errors function "" "no kernel log lines at error level or above"
+else
+    res FAIL boot.dmesg-errors function log "$nerr kernel log line(s) at error level or above"
+fi
+
+if [ -r /sys/kernel/debug/devices_deferred ]; then
+    dfr=$(cat /sys/kernel/debug/devices_deferred)
+    repro "cat /sys/kernel/debug/devices_deferred"
+    ev "$dfr"
+    if [ -z "$dfr" ]; then
+        res PASS boot.deferred probe "" "no devices left in deferred probe"
+    else
+        res FAIL boot.deferred probe deferred "$(printf '%s\n' "$dfr" | grep -c .) device(s) stuck in deferred probe"
+    fi
+else
+    res SKIP boot.deferred probe option "debugfs not available (CONFIG_DEBUG_FS)"
+fi
+
+taint=$(cat /proc/sys/kernel/tainted)
+repro "cat /proc/sys/kernel/tainted"
+if [ "$taint" = 0 ]; then
+    res PASS boot.taint function "" "kernel not tainted"
+else
+    ev "$(grep -l . /sys/module/*/taint 2>/dev/null | while read -r t; do
+            v=$(cat "$t"); [ -n "$v" ] && echo "${t%/taint} $v"; done | sed 's#/sys/module/##')"
+    res FAIL boot.taint function log "kernel tainted ($taint)"
+fi
+
+# Upstream kselftests (packaged by vf2-kselftests): reported verbatim, as one
+# result each; their own KTAP is kept in the evidence.
+KST=/usr/lib/vf2-selftest/kselftest
+for t in dt/test_unprobed_devices.sh devices/error_logs/test_device_error_logs.py; do
+    tid=kselftest.$(basename "${t%.*}")
+    if [ ! -x "$KST/$t" ]; then
+        res SKIP "$tid" probe option "upstream kselftest not installed (vf2-kselftests)"
+        continue
+    fi
+    out=$("$KST/$t" 2>&1); rc=$?
+    repro "$KST/$t"
+    ev "$(printf '%s\n' "$out" | grep -E '^not ok|^# (Totals|FAILED)|^1\.\.' | head -n 20)"
+    case $rc in
+        0) res PASS "$tid" probe "" "upstream $t passed" ;;
+        4) res SKIP "$tid" probe option "upstream $t skipped all tests" ;;
+        *) res FAIL "$tid" probe log "upstream $t: $(printf '%s\n' "$out" | grep -c '^not ok') failing case(s)" ;;
+    esac
+done
+
+# --- CPU, memory, DVFS ---
+online=$(cat /sys/devices/system/cpu/online)
+nh=$(grep -c '^processor' /proc/cpuinfo)
+repro "cat /sys/devices/system/cpu/online"
+ev "$(grep -m1 '^isa' /proc/cpuinfo)"
+ev "$(grep -m1 '^uarch' /proc/cpuinfo)"
+if [ "$online" = 0-3 ] && [ "$nh" = 4 ]; then
+    res PASS cpu.harts function "" "4 U74 harts online ($online)"
+else
+    res FAIL cpu.harts function function "expected 4 harts online, got '$online' ($nh in cpuinfo)"
+fi
+
+isa=$(sed -n 's/^isa[[:space:]]*:[[:space:]]*//p' /proc/cpuinfo | head -n1)
+repro "grep -m1 ^isa /proc/cpuinfo"
+case "$isa" in
+    rv64imafdc*) res PASS cpu.isa function "" "$isa" ;;
+    *)           res FAIL cpu.isa function function "unexpected ISA string '$isa'" ;;
+esac
+
+memkb=$(awk '/^MemTotal:/ { print $2 }' /proc/meminfo)
+repro "grep MemTotal /proc/meminfo"
+ev "DT memory node(s): $(ls -d $PDT/memory@* 2>/dev/null | sed "s#$PDT/##" | tr '\n' ' ')"
+if [ "${memkb:-0}" -gt 1500000 ]; then
+    res PASS mem.size function "" "MemTotal $((memkb / 1024)) MiB"
+else
+    res FAIL mem.size function function "MemTotal only ${memkb:-?} kB"
+fi
+
+POL=/sys/devices/system/cpu/cpufreq/policy0
+VDD=""
+for r in /sys/class/regulator/regulator.*; do
+    [ "$(cat "$r/name" 2>/dev/null)" = vdd_cpu ] && VDD=$r
+done
+repro "cat $POL/scaling_driver $POL/scaling_available_frequencies"
+if [ -d "$POL" ]; then
+    ev "driver=$(cat $POL/scaling_driver) governor=$(cat $POL/scaling_governor)"
+    ev "available: $(cat $POL/scaling_available_frequencies 2>/dev/null)"
+    res PASS cpu.cpufreq probe "" "$(cat $POL/scaling_driver) policy for cpus $(cat $POL/related_cpus)"
+
+    # Step through every OPP by clamping min=max, read back the frequency the
+    # clock framework reports and the vdd_cpu voltage. Restored afterwards.
+    omin=$(cat $POL/scaling_min_freq); omax=$(cat $POL/scaling_max_freq)
+    echo "echo $omin > $POL/scaling_min_freq; echo $omax > $POL/scaling_max_freq; echo $omin > $POL/scaling_min_freq" >>"$UNDO"
+    bad=0; nf=0
+    for f in $(cat $POL/scaling_available_frequencies 2>/dev/null); do
+        if [ "$f" -gt "$(cat $POL/scaling_max_freq)" ]; then
+            echo "$f" >$POL/scaling_max_freq; echo "$f" >$POL/scaling_min_freq
+        else
+            echo "$f" >$POL/scaling_min_freq; echo "$f" >$POL/scaling_max_freq
+        fi
+        sleep 0.2 2>/dev/null || sleep 1
+        cur=$(cat $POL/cpuinfo_cur_freq 2>/dev/null || cat $POL/scaling_cur_freq); cur=${cur:-0}
+        uv=""; [ -n "$VDD" ] && uv=$(cat "$VDD/microvolts" 2>/dev/null)
+        ev "set $f kHz -> cur $cur kHz, vdd_cpu ${uv:-?} uV"
+        [ "$(( (cur - f) * 100 / f ))" -eq 0 ] || bad=1
+        nf=$((nf + 1))
+    done
+    echo "$omin" >$POL/scaling_min_freq; echo "$omax" >$POL/scaling_max_freq; echo "$omin" >$POL/scaling_min_freq
+    repro "echo <f> > $POL/scaling_max_freq; echo <f> > $POL/scaling_min_freq; cat $POL/cpuinfo_cur_freq ${VDD:+$VDD/microvolts}"
+    if [ "$nf" = 0 ]; then
+        res FAIL cpu.dvfs function function "policy exposes no scaling_available_frequencies (no OPP table?)"
+    elif [ "$bad" = 0 ]; then
+        res PASS cpu.dvfs function "" "all $nf OPPs reached and read back from the clock framework"
+    else
+        res FAIL cpu.dvfs function function "an OPP did not read back (see evidence)"
+    fi
+else
+    cf=$(kconfig CONFIG_CPUFREQ_DT)
+    ev "CONFIG_CPUFREQ_DT=${cf:-not set}"
+    res FAIL cpu.cpufreq probe "$([ -z "$cf" ] && have_kconfig && echo config-off || echo probe-error)" "no cpufreq policy"
+    skip_fn cpu.dvfs "no cpufreq policy"
+fi
+
+# --- Power: PMIC, regulators, EEPROM ---
+if probe_check pmic.probe x-powers,axp15060 36 CONFIG_MFD_AXP20X_I2C "AXP15060 PMIC"; then
+    repro "cat ${VDD:-/sys/class/regulator/<vdd_cpu>}/microvolts"
+    uv=""; [ -n "$VDD" ] && uv=$(cat "$VDD/microvolts" 2>/dev/null)
+    ev "$(for r in /sys/class/regulator/regulator.*; do
+            printf '%s %s uV\n' "$(cat $r/name)" "$(cat $r/microvolts 2>/dev/null || echo -)"; done)"
+    if [ -n "$uv" ] && [ "$uv" -ge 500000 ] && [ "$uv" -le 1540000 ]; then
+        res PASS pmic.vdd_cpu function "" "vdd_cpu regulator reads $uv uV"
+    else
+        res FAIL pmic.vdd_cpu function function "vdd_cpu regulator missing or out of range (${uv:-none})"
+    fi
+else
+    skip_fn pmic.vdd_cpu
+fi
+
+if probe_check eeprom.probe atmel,24c04 50 CONFIG_EEPROM_AT24 "board ID EEPROM"; then
+    nv=$(find "$DEV/" -maxdepth 2 \( -name eeprom -o -name nvmem \) 2>/dev/null | head -n1)
+    repro "hexdump -C $nv | head"
+    if [ -n "$nv" ] && dd if="$nv" of="$TMP/eeprom" bs=512 count=1 2>/dev/null &&
+       [ "$(od -An -v -tx1 "$TMP/eeprom" | tr -s ' ' '\n' | grep -v -e '^$' -e '^ff$' -e '^00$' | grep -c .)" -gt 0 ]; then
+        ev "strings: $(tr -c '[:print:]' '\n' <"$TMP/eeprom" | grep -E '.{5,}' | head -n 4 | tr '\n' ' ')"
+        res PASS eeprom.read function "" "read 512 bytes, contents not blank"
+    else
+        res FAIL eeprom.read function function "could not read EEPROM contents via ${nv:-nvmem}"
+    fi
+else
+    skip_fn eeprom.read
+fi
+
+# --- SoC infrastructure (probe only) ---
+probe_check clk.sys    starfive,jh7110-syscrg 13020000 CONFIG_CLK_STARFIVE_JH7110_SYS "SYS clock/reset"
+probe_check clk.aon    starfive,jh7110-aoncrg 17000000 CONFIG_CLK_STARFIVE_JH7110_AON "AON clock/reset"
+probe_check clk.stg    starfive,jh7110-stgcrg 10230000 CONFIG_CLK_STARFIVE_JH7110_STG "STG clock/reset"
+probe_check clk.isp    starfive,jh7110-ispcrg 19810000 CONFIG_CLK_STARFIVE_JH7110_ISP "ISP clock/reset"
+probe_check clk.vout   starfive,jh7110-voutcrg 295c0000 CONFIG_CLK_STARFIVE_JH7110_VOUT "VOUT clock/reset"
+probe_check pmu        starfive,jh7110-pmu 17030000 CONFIG_JH71XX_PMU "power domains (PMU)"
+probe_check ccache     starfive,jh7110-ccache 2010000 CONFIG_SIFIVE_CCACHE "L2 cache controller"
+probe_check dma.axi    starfive,jh7110-axi-dma 16050000 CONFIG_DW_AXI_DMAC "AXI DMA"
+probe_check dma.pl080  arm,pl080 16008000 CONFIG_AMBA_PL08X "PL080 DMA"
+
+for g in "sys starfive,jh7110-sys-pinctrl 13040000 CONFIG_PINCTRL_STARFIVE_JH7110_SYS" \
+         "aon starfive,jh7110-aon-pinctrl 17020000 CONFIG_PINCTRL_STARFIVE_JH7110_AON"; do
+    set -- $g
+    if probe_check "gpio.$1.probe" "$2" "$3" "$4" "$1 pinctrl/GPIO"; then
+        gc=$(ls -d "$DEV"/gpiochip* 2>/dev/null | head -n1)
+        repro "ls $DEV; grep ${gc##*/}: /sys/kernel/debug/gpio"
+        ev "$(grep -F "${gc##*/}:" /sys/kernel/debug/gpio 2>/dev/null)"
+        if [ -n "$gc" ]; then
+            res PASS "gpio.$1.chip" function "" "${gc##*/} registered"
+        else
+            res FAIL "gpio.$1.chip" function function "no gpiochip under $DEV"
+        fi
+    else
+        skip_fn "gpio.$1.chip"
+    fi
+done
+
+# --- Low-speed peripherals ---
+if probe_check uart0.probe snps,dw-apb-uart 10000000 CONFIG_SERIAL_8250_DW "UART0 (debug console)"; then
+    tty=$(ls "$DEV/tty" 2>/dev/null | head -n1)
+    repro "cat /proc/consoles"
+    ev "$(cat /proc/consoles)"
+    if [ -n "$tty" ] && grep -q "^$tty " /proc/consoles; then
+        res PASS uart0.console function "" "$tty registered and is a kernel console"
+    else
+        res FAIL uart0.console function function "${tty:-no tty} not in /proc/consoles"
+    fi
+else
+    skip_fn uart0.console
+fi
+
+for i in "i2c0 10030000 header" "i2c2 10050000 board" "i2c5 12050000 PMIC/EEPROM" "i2c6 12060000 camera"; do
+    set -- $i
+    probe_check "$1" snps,designware-i2c "$2" CONFIG_I2C_DESIGNWARE_PLATFORM "$1 ($3 bus)"
+done
+probe_check spi0 arm,pl022 10060000 CONFIG_SPI_PL022 "SPI0 (40-pin header)"
+
+if probe_check pwm.probe starfive,jh7110-pwm 120d0000 CONFIG_PWM_OCORES "PWM (OpenCores, 8ch)"; then
+    chip=$(ls -d "$DEV"/pwm/pwmchip* 2>/dev/null | head -n1)
+    if [ -n "$chip" ] && [ ! -d "$chip/pwm0" ]; then
+        pc=/sys/class/pwm/${chip##*/}
+        echo "echo 0 > $pc/unexport" >>"$UNDO"
+        echo 0 >"$pc/export"
+        echo 1000000 >"$pc/pwm0/period" 2>/dev/null; echo 250000 >"$pc/pwm0/duty_cycle" 2>/dev/null
+        per=$(cat "$pc/pwm0/period" 2>/dev/null); dut=$(cat "$pc/pwm0/duty_cycle" 2>/dev/null)
+        echo 0 >"$pc/unexport"
+        repro "echo 0 > $pc/export; echo 1000000 > $pc/pwm0/period; cat $pc/pwm0/period"
+        ev "npwm=$(cat "$pc/npwm") period=$per duty_cycle=$dut"
+        if [ "$per" = 1000000 ] && [ "$dut" = 250000 ]; then
+            res PASS pwm.config function "" "channel 0 period/duty configured and read back (output not enabled; waveform not verified)"
+        else
+            res FAIL pwm.config function function "channel 0 config did not read back (period=$per duty=$dut)"
+        fi
+    else
+        res SKIP pwm.config function hw-absent "no pwmchip, or channel 0 already in use"
+    fi
+else
+    skip_fn pwm.config
+fi
+
+if probe_check led.probe gpio-leds "" CONFIG_LEDS_GPIO "status LED"; then
+    led=$(ls -d "$DEV"/leds/* 2>/dev/null | head -n1)
+    if [ -n "$led" ]; then
+        ob=$(cat "$led/brightness"); mx=$(cat "$led/max_brightness")
+        echo "echo $ob > $led/brightness" >>"$UNDO"
+        echo 0 >"$led/brightness"; b0=$(cat "$led/brightness")
+        echo "$mx" >"$led/brightness"; b1=$(cat "$led/brightness")
+        echo "$ob" >"$led/brightness"
+        repro "echo 0 > $led/brightness; cat $led/brightness"
+        ev "${led##*/}: off->$b0 on->$b1 (restored $ob)"
+        if [ "$b0" = 0 ] && [ "$b1" = "$mx" ]; then
+            res PASS led.toggle function "" "${led##*/} switched off/on via sysfs (light not observed)"
+        else
+            res FAIL led.toggle function function "${led##*/} brightness did not read back"
+        fi
+    else
+        res FAIL led.toggle function function "gpio-leds bound but no LED class device"
+    fi
+else
+    skip_fn led.toggle
+fi
+
+# --- Sensors, watchdog, security blocks ---
+if probe_check thermal.probe starfive,jh7110-temp 120e0000 CONFIG_SENSORS_SFCTEMP "SoC temperature sensor"; then
+    TEMPF=$(ls "$DEV"/hwmon/hwmon*/temp1_input 2>/dev/null | head -n1)
+    t=$(cat "$TEMPF" 2>/dev/null)
+    repro "cat $TEMPF"
+    if [ -n "$t" ] && [ "$t" -gt 0 ] && [ "$t" -lt 110000 ]; then
+        res PASS thermal.read function "" "SoC temperature $((t / 1000)).$(( (t % 1000) / 100 )) C"
+    else
+        res FAIL thermal.read function function "implausible or unreadable temperature '${t:-}'"
+    fi
+else
+    TEMPF=""; skip_fn thermal.read
+fi
+
+if probe_check wdt.probe starfive,jh7110-wdt 13070000 CONFIG_STARFIVE_WATCHDOG "watchdog"; then
+    wd=$(ls -d "$DEV"/watchdog/watchdog* 2>/dev/null | head -n1)
+    repro "cat /sys/class/watchdog/${wd##*/}/identity /sys/class/watchdog/${wd##*/}/timeout"
+    if [ -n "$wd" ] && [ -c "/dev/${wd##*/}" ]; then
+        ev "identity=$(cat $wd/identity) timeout=$(cat $wd/timeout 2>/dev/null)s state=$(cat $wd/state 2>/dev/null)"
+        res PASS wdt.register function "" "/dev/${wd##*/} registered (not opened: that would arm it)"
+    else
+        res FAIL wdt.register function function "no watchdog device registered"
+    fi
+else
+    skip_fn wdt.register
+fi
+
+if probe_check trng.probe starfive,jh7110-trng 1600c000 CONFIG_HW_RANDOM_JH7110 "TRNG"; then
+    HR=/sys/class/misc/hw_random
+    avail=$(cat $HR/rng_available 2>/dev/null); cur=$(cat $HR/rng_current 2>/dev/null)
+    mine=$(printf '%s\n' $avail | grep -i -e jh7110 -e 1600c000 | head -n1)
+    ev "rng_available='$avail' rng_current='$cur'"
+    if [ -n "$mine" ]; then
+        [ "$cur" != "$mine" ] && { echo "echo $cur > $HR/rng_current" >>"$UNDO"; echo "$mine" >$HR/rng_current; }
+        timeout 10 dd if=/dev/hwrng of="$TMP/rng" bs=4096 count=1 2>/dev/null
+        [ "$cur" != "$mine" ] && echo "$cur" >$HR/rng_current
+        nb=$(wc -c <"$TMP/rng" 2>/dev/null); nb=${nb:-0}
+        nu=$(od -An -v -tu1 "$TMP/rng" 2>/dev/null | tr -s ' ' '\n' | grep -v '^$' | sort -u | grep -c .)
+        repro "echo $mine > $HR/rng_current; dd if=/dev/hwrng bs=4096 count=1 | od -An -tu1 | tr -s ' ' '\\n' | sort -u | wc -l"
+        ev "read $nb bytes, $nu distinct byte values"
+        # 4096 uniform bytes miss one of 256 values with p ~ 3e-5
+        if [ "$nb" = 4096 ] && [ "$nu" -ge 250 ]; then
+            res PASS trng.read function "" "4 KiB read from $mine, $nu/256 byte values seen"
+        else
+            res FAIL trng.read function function "short or low-variety read from $mine ($nb bytes, $nu values)"
+        fi
+    else
+        res FAIL trng.read function function "TRNG bound but not registered with hw_random"
+    fi
+else
+    skip_fn trng.read
+fi
+
+if probe_check crypto.probe starfive,jh7110-crypto 16000000 CONFIG_CRYPTO_DEV_JH7110 "crypto engine (AES/SHA/RSA)"; then
+    algs=$(awk -F' *: ' '/^name/ { n = $2 } /^driver/ { d = $2 } /^module/ { m = $2 }
+        /^selftest/ { if (d ~ /jh7110|starfive/ || m ~ /jh7110/) print n " " d " selftest=" $2 }' /proc/crypto | sort -u)
+    na=$(printf '%s' "$algs" | grep -c .)
+    nbad=$(printf '%s\n' "$algs" | grep -c -v -e 'selftest=passed$' -e '^$')
+    repro "grep -B2 -A6 jh7110 /proc/crypto"
+    ev "$algs"
+    if [ "$na" = 0 ]; then
+        res FAIL crypto.selftest function function "no JH7110 algorithms registered in /proc/crypto"
+    elif [ "$nbad" = 0 ]; then
+        res PASS crypto.selftest function "" "$na JH7110 algorithm(s) registered, all passed the crypto manager self-tests"
+    elif printf '%s\n' "$algs" | grep -q 'selftest=unknown'; then
+        res SKIP crypto.selftest function option "self-tests not run (CONFIG_CRYPTO_MANAGER_DISABLE_TESTS?)"
+    else
+        res FAIL crypto.selftest function function "$nbad of $na JH7110 algorithm(s) failed self-test"
+    fi
+else
+    skip_fn crypto.selftest
+fi
+
+# --- Storage: eMMC/SD, QSPI NOR ---
+for m in "mmc0 16010000 eMMC" "mmc1 16020000 microSD"; do
+    set -- $m
+    if probe_check "$1.probe" starfive,jh7110-mmc "$2" CONFIG_MMC_DW_STARFIVE "$1 ($3 host)"; then
+        host=$(ls -d "$DEV"/mmc_host/mmc* 2>/dev/null | head -n1)
+        card=$(ls -d "$host"/mmc*:* 2>/dev/null | head -n1)
+        if [ -z "$card" ]; then
+            res SKIP "$1.read" function hw-absent "no card in the $3 slot"
+            continue
+        fi
+        blk=$(ls "$card/block" 2>/dev/null | head -n1)
+        ev "card: type=$(cat $card/type) name=$(cat $card/name 2>/dev/null) size=$(( $(cat /sys/block/$blk/size) / 2048 )) MiB"
+        ev "$(grep -E 'clock|timing spec|bus width' /sys/kernel/debug/${host##*/}/ios 2>/dev/null)"
+        repro "echo 3 > /proc/sys/vm/drop_caches; dd if=/dev/$blk of=/dev/null bs=1M count=32"
+        if [ -n "$blk" ] && read_test "/dev/$blk" 32; then
+            res PASS "$1.read" function "" "read 32 MiB from /dev/$blk at $RT_MBPS MB/s"
+        else
+            res FAIL "$1.read" function function "read from ${blk:-<no block device>} failed"
+            ev "$(dmesg_for "${host##*/}" 5)"
+        fi
+    else
+        skip_fn "$1.read"
+    fi
+done
+
+probe_check qspi.probe starfive,jh7110-qspi 13010000 CONFIG_SPI_CADENCE_QUADSPI "QSPI controller"
+if probe_check qspi.flash jedec,spi-nor 0 CONFIG_MTD_SPI_NOR "QSPI NOR flash"; then
+    ev "$(cat /proc/mtd)"
+    ev "part=$(cat "$DEV/spi-nor/partname" 2>/dev/null) jedec_id=$(cat "$DEV/spi-nor/jedec_id" 2>/dev/null)"
+    mtd=$(awk -F: '/"spl"/ { print $1; exit }' /proc/mtd); mtd=${mtd:-mtd0}
+    repro "dd if=/dev/$mtd bs=64k count=1 | hexdump -C | head"
+    if dd if="/dev/$mtd" of="$TMP/nor" bs=65536 count=1 2>/dev/null &&
+       [ "$(od -An -v -tx1 "$TMP/nor" | tr -s ' ' '\n' | grep -v -e '^$' -e '^ff$' | grep -c .)" -gt 0 ]; then
+        res PASS qspi.read function "" "read 64 KiB from /dev/$mtd (contents not erased)"
+    else
+        res FAIL qspi.read function function "could not read /dev/$mtd, or it is blank"
+    fi
+else
+    skip_fn qspi.read
+fi
+
+# --- Ethernet ---
+for e in "eth.gmac0 16030000" "eth.gmac1 16040000"; do
+    set -- $e; id=$1
+    if ! probe_check "$id.probe" starfive,jh7110-dwmac "$2" CONFIG_DWMAC_STARFIVE "GMAC @$2"; then
+        skip_fn "$id.mac"; skip_fn "$id.link"; skip_fn "$id.ping"; continue
+    fi
+    ifc=$(ls "$DEV/net" 2>/dev/null | head -n1)
+    if [ -z "$ifc" ]; then
+        res FAIL "$id.mac" function function "bound, but no network interface under $DEV/net"
+        skip_fn "$id.link"; skip_fn "$id.ping"; continue
+    fi
+    mac=$(cat /sys/class/net/$ifc/address)
+    repro "cat /sys/class/net/$ifc/address"
+    if [ $(( 0x${mac%%:*} & 2 )) = 0 ]; then
+        res PASS "$id.mac" function "" "$ifc MAC $mac is globally administered (from firmware/EEPROM)"
+    else
+        res FAIL "$id.mac" function function "$ifc MAC $mac is random/locally administered (firmware did not pass local-mac-address)"
+    fi
+
+    wasup=$(( $(cat /sys/class/net/$ifc/flags) & 1 ))
+    if [ "$wasup" = 0 ]; then
+        echo "ip link set $ifc down" >>"$UNDO"
+        ip link set "$ifc" up 2>/dev/null
+    fi
+    car=0; w=0
+    while [ $w -lt 10 ]; do
+        [ "$(cat /sys/class/net/$ifc/carrier 2>/dev/null)" = 1 ] && { car=1; break; }
+        sleep 1; w=$((w + 1))
+    done
+    phy=$(readlink /sys/class/net/$ifc/phydev 2>/dev/null)
+    ev "phy=${phy##*/} driver=$(basename "$(readlink /sys/class/net/$ifc/phydev/driver 2>/dev/null)" 2>/dev/null)"
+    repro "ip link set $ifc up; cat /sys/class/net/$ifc/carrier /sys/class/net/$ifc/speed"
+    if [ "$NO_LINK" = 1 ]; then
+        res SKIP "$id.link" function option "carrier not checked (--no-link)"
+    elif [ "$car" = 1 ]; then
+        res PASS "$id.link" function "" "$ifc carrier up at $(cat /sys/class/net/$ifc/speed) Mb/s $(cat /sys/class/net/$ifc/duplex) duplex"
+    else
+        ev "$(dmesg_for "$ifc" 4)"
+        res FAIL "$id.link" function function "$ifc: no carrier after 10 s (cable connected?)"
+    fi
+    gw=$(ip route 2>/dev/null | awk -v i="$ifc" '$1 == "default" { for (k = 1; k < NF; k++) if ($k == "dev" && $(k + 1) == i) print $3 }' | head -n1)
+    if [ "$NO_LINK" = 1 ]; then
+        res SKIP "$id.ping" function option "not checked (--no-link)"
+    elif [ "$car" = 1 ] && [ -n "$gw" ]; then
+        repro "ping -c 3 -I $ifc $gw"
+        if po=$(ping -c 3 -W 2 -I "$ifc" "$gw" 2>&1); then
+            ev "$(printf '%s\n' "$po" | tail -n 2)"
+            res PASS "$id.ping" function "" "gateway $gw reachable via $ifc"
+        else
+            ev "$(printf '%s\n' "$po" | tail -n 2)"
+            res FAIL "$id.ping" function function "gateway $gw not reachable via $ifc"
+        fi
+    else
+        res SKIP "$id.ping" function hw-absent "no carrier or no default route via $ifc"
+    fi
+    [ "$wasup" = 0 ] && ip link set "$ifc" down 2>/dev/null
+done
+
+# --- USB and PCIe ---
+probe_check phy.usb    starfive,jh7110-usb-phy 10200000 CONFIG_PHY_STARFIVE_JH7110_USB "USB PHY"
+probe_check phy.pcie0  starfive,jh7110-pcie-phy 10210000 CONFIG_PHY_STARFIVE_JH7110_PCIE "PCIe0 PHY"
+probe_check phy.pcie1  starfive,jh7110-pcie-phy 10220000 CONFIG_PHY_STARFIVE_JH7110_PCIE "PCIe1 PHY"
+
+probe_check usb0.wrapper starfive,jh7110-usb 10100000 CONFIG_USB_CDNS3_STARFIVE "USB-C port (cdns3 wrapper)"
+if probe_check usb0.probe cdns,usb3 0 CONFIG_USB_CDNS3 "USB-C port (cdns3 controller)"; then
+    drm=$(rd "$PDT$NODE/dr_mode")
+    repro "ls /sys/class/udc"
+    ev "dr_mode=${drm:-otg} udc=$(ls /sys/class/udc 2>/dev/null | tr '\n' ' ')"
+    if [ "$drm" = host ]; then
+        res SKIP usb0.udc function option "dr_mode=host; gadget side not applicable"
+    elif ls /sys/class/udc/* >/dev/null 2>&1; then
+        res PASS usb0.udc function "" "USB device controller registered (dr_mode=${drm:-otg})"
+    else
+        res FAIL usb0.udc function function "no UDC registered (dr_mode=${drm:-otg})"
+    fi
+else
+    skip_fn usb0.udc
+fi
+
+# pci_eps DEVDIR -> lines "<bdf> <vendor>:<device> class=<class> driver=<drv> <speed> x<width>"
+pci_eps() {
+    for p in /sys/bus/pci/devices/*; do
+        r=$(readlink -f "$p")
+        case "$r" in "$1"/*) ;; *) continue ;; esac
+        cl=$(cat "$p/class")
+        case "$cl" in 0x0604*) continue ;; esac   # skip the root port
+        printf '%s %s:%s class=%s driver=%s %s x%s\n' "${p##*/}" \
+            "$(sed 's/0x//' "$p/vendor")" "$(sed 's/0x//' "$p/device")" "$cl" \
+            "$(basename "$(readlink "$p/driver" 2>/dev/null)" 2>/dev/null)" \
+            "$(cat "$p/current_link_speed" 2>/dev/null | tr -d ' ')" "$(cat "$p/current_link_width" 2>/dev/null)"
+    done
+}
+
+VL805=""
+if probe_check pcie0.probe starfive,jh7110-pcie 940000000 CONFIG_PCIE_STARFIVE_HOST "PCIe0 (on-board VL805 USB 3.0)"; then
+    eps=$(pci_eps "$DEV")
+    repro "lspci -nn  (or: ls /sys/bus/pci/devices)"
+    ev "$eps"
+    VL805=$(printf '%s\n' "$eps" | awk '$2 == "1106:3483" { print $1 }')
+    if [ -n "$VL805" ]; then
+        res PASS pcie0.link function "" "link up, VL805 enumerated at $VL805 ($(printf '%s\n' "$eps" | awk '$2 == "1106:3483" { print $5, $6 }'))"
+    else
+        ev "$(dmesg_for "${DEV##*/}" 5)"
+        res FAIL pcie0.link function function "VL805 (1106:3483) not enumerated behind pcie0"
+    fi
+else
+    skip_fn pcie0.link
+fi
+
+if [ -n "$VL805" ]; then
+    vdrv=$(basename "$(readlink /sys/bus/pci/devices/$VL805/driver 2>/dev/null)" 2>/dev/null)
+    buses=$(ls -d /sys/bus/pci/devices/$VL805/usb* 2>/dev/null | sed 's#.*/##' | tr '\n' ' ')
+    repro "ls /sys/bus/pci/devices/$VL805/; lsusb -t"
+    ev "$(for u in /sys/bus/usb/devices/*-*; do
+            case "${u##*/}" in *:*) continue ;; esac
+            printf '%s %s:%s %s %s\n' "${u##*/}" "$(cat $u/idVendor)" "$(cat $u/idProduct)" \
+                "$(cat $u/product 2>/dev/null)" "$(cat $u/speed 2>/dev/null)M"; done)"
+    unb=$(for i in /sys/bus/usb/devices/*-*:*; do
+            [ -e "$i" ] && [ ! -e "$i/driver" ] && echo "${i##*/} class=$(cat $i/bInterfaceClass)"; done)
+    [ -n "$unb" ] && ev "interfaces without a driver: $unb"
+    if [ "$vdrv" = xhci_hcd ] && [ -n "$buses" ]; then
+        res PASS usb.vl805 function "" "xhci_hcd bound to VL805, root hubs: $buses"
+    else
+        res FAIL usb.vl805 function function "VL805 driver='${vdrv:-none}', root hubs='$buses'"
+    fi
+else
+    skip_fn usb.vl805 "VL805 not enumerated"
+fi
+
+# A USB mass-storage device, if one is plugged in: read test
+usbblk=""
+for b in /sys/block/sd*; do
+    [ -e "$b" ] && readlink -f "$b" | grep -q /usb && { usbblk=${b##*/}; break; }
+done
+if [ -n "$usbblk" ]; then
+    repro "echo 3 > /proc/sys/vm/drop_caches; dd if=/dev/$usbblk of=/dev/null bs=1M count=64"
+    if read_test "/dev/$usbblk" 64; then
+        res PASS usb.storage-read function "" "read 64 MiB from /dev/$usbblk at $RT_MBPS MB/s"
+    else
+        res FAIL usb.storage-read function function "read from /dev/$usbblk failed"
+    fi
+else
+    res SKIP usb.storage-read function hw-absent "no USB storage attached"
+fi
+
+if probe_check pcie1.probe starfive,jh7110-pcie 9c0000000 CONFIG_PCIE_STARFIVE_HOST "PCIe1 (M.2 M-key)"; then
+    eps=$(pci_eps "$DEV")
+    repro "lspci -nn  (or: ls /sys/bus/pci/devices)"
+    ev "$eps"
+    if [ -z "$eps" ]; then
+        res SKIP pcie1.link function hw-absent "nothing enumerated in the M.2 slot (empty?)"
+        res SKIP pcie1.nvme-read function hw-absent "no NVMe device"
+    else
+        res PASS pcie1.link function "" "link up: $(printf '%s\n' "$eps" | head -n1)"
+        nv=$(ls /sys/block 2>/dev/null | grep -m1 '^nvme[0-9]*n1$')
+        if [ -n "$nv" ]; then
+            repro "echo 3 > /proc/sys/vm/drop_caches; dd if=/dev/$nv of=/dev/null bs=1M count=128"
+            if read_test "/dev/$nv" 128; then
+                res PASS pcie1.nvme-read function "" "read 128 MiB from /dev/$nv at $RT_MBPS MB/s"
+            else
+                res FAIL pcie1.nvme-read function function "read from /dev/$nv failed"
+            fi
+        else
+            res SKIP pcie1.nvme-read function hw-absent "M.2 device is not NVMe (or nvme driver missing)"
+        fi
+    fi
+else
+    skip_fn pcie1.link; skip_fn pcie1.nvme-read
+fi
+
+# Wi-Fi: only via a USB adapter on this board
+phys=$(ls /sys/class/ieee80211 2>/dev/null)
+repro "ls /sys/class/ieee80211; iw dev"
+if [ -n "$phys" ]; then
+    for ph in $phys; do ev "$ph driver=$(basename "$(readlink /sys/class/ieee80211/$ph/device/driver)")"; done
+    res PASS wifi.phy function "" "802.11 phy registered: $(echo $phys)"
+else
+    res SKIP wifi.phy function hw-absent "no 802.11 phy (no supported Wi-Fi adapter attached)"
+fi
+
+# --- Audio ---
+probe_check audio.pwmdac starfive,jh7110-pwmdac 100b0000 CONFIG_SND_SOC_JH7110_PWMDAC "PWM-DAC (3.5 mm jack)"
+if probe_check audio.card simple-audio-card "" CONFIG_SND_SIMPLE_CARD "PWM-DAC sound card"; then
+    cidx=$(ls -d "$DEV"/sound/card* 2>/dev/null | head -n1 | sed 's/.*card//')
+    ev "$(cat /proc/asound/cards 2>/dev/null)"
+    if [ -z "$cidx" ]; then
+        res FAIL audio.play function function "card bound but no ALSA card registered"
+    elif ! have aplay; then
+        res SKIP audio.play function option "aplay not installed"
+    else
+        repro "aplay -D plughw:$cidx,0 -f S16_LE -r 48000 -c 2 -d 1 /dev/zero"
+        if ao=$(timeout 15 aplay -q -D "plughw:$cidx,0" -f S16_LE -r 48000 -c 2 -d 1 /dev/zero 2>&1); then
+            res PASS audio.play function "" "1 s of silence played on card $cidx (no audio output observed)"
+        else
+            ev "$ao"
+            res FAIL audio.play function function "aplay on card $cidx failed"
+        fi
+    fi
+else
+    skip_fn audio.play
+fi
+probe_check audio.i2srx  starfive,jh7110-i2srx 100e0000 CONFIG_SND_SOC_JH7110_I2S "I2S RX"
+probe_check audio.i2stx0 starfive,jh7110-i2stx0 120b0000 CONFIG_SND_SOC_JH7110_I2S "I2S TX0"
+probe_check audio.i2stx1 starfive,jh7110-i2stx1 120c0000 CONFIG_SND_SOC_JH7110_I2S "I2S TX1"
+probe_check audio.tdm    starfive,jh7110-tdm 10090000 CONFIG_SND_SOC_JH7110_TDM "TDM"
+probe_check audio.spdif  starfive,jh7110-spdif 100a0000 "" "S/PDIF"
+probe_check audio.pdm    starfive,jh7110-pdm 100d0000 "" "PDM microphone input"
+
+# --- Multimedia (largely not in mainline yet: tracked so progress shows up) ---
+probe_check camera.csi2rx starfive,jh7110-csi2rx 19800000 CONFIG_VIDEO_CADENCE_CSI2RX "MIPI CSI-2 receiver"
+probe_check camera.dphy   starfive,jh7110-dphy-rx 19820000 CONFIG_PHY_STARFIVE_JH7110_DPHY_RX "MIPI D-PHY RX"
+probe_check camera.isp    starfive,jh7110-camss "" CONFIG_VIDEO_STARFIVE_CAMSS "camera subsystem (ISP)"
+probe_check camera.vin    starfive,jh7110-vin "" "" "camera VIN (vendor)"
+
+c=$(first_compat "img,img-bxe-4-32 img,img-rogue starfive,jh7110-gpu img-gpu")
+if probe_check gpu.probe "$c" "" CONFIG_DRM_POWERVR "PowerVR BXE-4-32 GPU"; then
+    # render node owned by this device (the vendor DDK may parent it elsewhere,
+    # so also accept one whose device is bound to the same driver)
+    rn=""
+    for r in /sys/class/drm/renderD*; do
+        [ -e "$r/device" ] || continue
+        rd_=$(readlink -f "$r/device")
+        if [ "$rd_" = "$(readlink -f "$DEV")" ] ||
+           [ "$(basename "$(readlink "$r/device/driver" 2>/dev/null)" 2>/dev/null)" = "$DRV" ]; then
+            rn=$r; break
+        fi
+    done
+    repro "ls -l /dev/dri/ /sys/class/drm/"
+    ev "$(ls -l /sys/class/drm/ 2>/dev/null | sed -n 's/.* \(card[0-9]*\|renderD[0-9]*\) -> /\1 -> /p')"
+    if [ -n "$rn" ] && [ -c "/dev/dri/${rn##*/}" ]; then
+        res PASS gpu.render-node function "" "/dev/dri/${rn##*/} registered by $DRV"
+    else
+        res FAIL gpu.render-node function function "GPU bound but no render node"
+    fi
+else
+    skip_fn gpu.render-node
+fi
+
+c=$(first_compat "starfive,jh7110-dc8200 verisilicon,dc8200 verisilicon,dc")
+if probe_check display.dc "$c" "" CONFIG_DRM_VERISILICON_DC "display controller (DC8200)"; then
+    conns=$(for k in /sys/class/drm/card*-*; do [ -e "$k/status" ] &&
+            echo "${k##*/}=$(cat $k/status)"; done)
+    repro "for c in /sys/class/drm/card*-*; do echo \$c \$(cat \$c/status); done"
+    ev "$conns"
+    if [ -n "$conns" ]; then
+        res PASS display.connectors function "" "DRM connectors: $(echo $conns)"
+    else
+        res FAIL display.connectors function function "display controller bound but no DRM connectors"
+    fi
+else
+    skip_fn display.connectors
+fi
+probe_check display.hdmi "$(first_compat "starfive,jh7110-inno-hdmi starfive,jh7110-hdmi")" "" CONFIG_DRM_INNO_HDMI "HDMI transmitter"
+probe_check display.dsi  "$(first_compat "starfive,jh7110-mipi_dsi starfive,jh7110-dsi cdns,dsi")" "" CONFIG_DRM_CDNS_DSI "MIPI DSI host"
+probe_check display.dphy-tx "$(first_compat "starfive,jh7110-mipi-dphy-tx starfive,jh7110-dphy-tx")" "" CONFIG_PHY_STARFIVE_JH7110_DPHY_TX "MIPI D-PHY TX"
+probe_check video.vpu-dec "$(first_compat "starfive,vdec starfive,jh7110-wave511 cnm,wave511")" "" CONFIG_VIDEO_WAVE_VPU "Wave511 video decoder"
+probe_check video.vpu-enc "$(first_compat "starfive,venc starfive,jh7110-wave521c cnm,wave521c")" "" CONFIG_VIDEO_WAVE_VPU "Wave521 video encoder"
+probe_check video.jpu "$(first_compat "starfive,jpu starfive,jh7110-jpu cnm,codaj12")" "" "" "JPEG codec (CODAJ12)"
+probe_check rtc "$(first_compat "starfive,jh7110-rtc")" "" CONFIG_RTC_DRV_STARFIVE "on-chip RTC"
+probe_check timer "starfive,jh7110-timer" 13050000 CONFIG_STARFIVE_JH7110_TIMER "SoC timer"
+probe_check can0 "starfive,jh7110-can" 130d0000 "" "CAN 0"
+probe_check can1 "starfive,jh7110-can" 130e0000 "" "CAN 1"
+
+# --- Optional stress (CPU + memory with verification), temperature tracked ---
+if [ "$STRESS" -gt 0 ] 2>/dev/null; then
+    if have stress-ng; then
+        e0=$(dmesg_raw | grep -c -E '^<[0-3]>')
+        tmax=0
+        stress-ng --cpu 4 --vm 2 --vm-bytes 25% --verify -t "${STRESS}s" --metrics-brief >"$TMP/stress" 2>&1 &
+        sp=$!
+        while kill -0 $sp 2>/dev/null; do
+            t=$(cat "$TEMPF" 2>/dev/null || echo 0); [ "$t" -gt "$tmax" ] && tmax=$t
+            sleep 2
+        done
+        wait $sp; src=$?
+        e1=$(dmesg_raw | grep -c -E '^<[0-3]>')
+        repro "stress-ng --cpu 4 --vm 2 --vm-bytes 25% --verify -t ${STRESS}s"
+        ev "$(tail -n 6 "$TMP/stress")"
+        ev "max SoC temperature $((tmax / 1000)) C; new error-level kernel log lines: $((e1 - e0))"
+        if [ "$src" = 0 ] && [ "$e1" = "$e0" ]; then
+            res PASS stress function "" "${STRESS}s CPU+VM stress with verification passed, max $((tmax / 1000)) C"
+        else
+            res FAIL stress function function "stress-ng rc=$src, $((e1 - e0)) new kernel errors, max $((tmax / 1000)) C"
+        fi
+    else
+        res SKIP stress function option "stress-ng not installed"
+    fi
+else
+    res SKIP stress function option "not requested (--stress SECS)"
+fi
+
+# --- Summary, files, baseline comparison ---
+emit "1..$N"
+diag "# Totals: pass:$P fail:$F skip:$S"
+
+REG=0
+if [ -n "$BASELINE" ]; then
+    awk -F'\t' '
+        NR == FNR { if ($1 !~ /^#/ && NF >= 2) b[$1] = $2; next }
+        $1 !~ /^#/ {
+            seen[$1] = 1
+            if (!($1 in b))                         print "NEW\t" $1 "\t" $2 "\t" $5
+            else if (b[$1] == "PASS" && $2 != "PASS") print "REGRESSION\t" $1 "\t" b[$1] " -> " $2 "\t" $5
+            else if (b[$1] != "PASS" && $2 == "PASS") print "IMPROVED\t" $1 "\t" b[$1] " -> " $2 "\t" $5
+        }
+        END { for (k in b) if (!(k in seen)) print "REMOVED\t" k "\t" b[k] }' \
+        "$BASELINE" "$RES" >"$TMP/compare"
+    REG=$(grep -c '^REGRESSION' "$TMP/compare")
+    diag "# Baseline: $BASELINE"
+    while IFS= read -r l; do diag "# $(printf '%s' "$l" | tr '\t' ' ')"; done <"$TMP/compare"
+    diag "# Regressions: $REG"
+fi
+
+if [ -n "$OUTDIR" ]; then
+    mkdir -p "$OUTDIR" || exit 2
+    cp "$KTAP" "$OUTDIR/ktap.txt"
+    { sed 's/^/#env\t/' "$ENVF"; cat "$RES"; } >"$OUTDIR/results.tsv"
+    md=$OUTDIR/report.md
+    {
+        envget() { awk -F'\t' -v k="$1" '$1 == k { print $2 }' "$ENVF"; }
+        printf '### VisionFive 2 self-test: %s, Linux %s\n\n' "$(envget model)" "$(envget kernel)"
+        printf '**%d pass, %d fail, %d skip** (%d checks)' "$P" "$F" "$S" "$N"
+        [ -n "$BASELINE" ] && printf ', **%d regression(s)** vs baseline' "$REG"
+        printf '\n\n| Environment | |\n|---|---|\n'
+        awk -F'\t' '$2 != "" { gsub(/\|/, "\\|", $2); print "| " $1 " | `" $2 "` |" }' "$ENVF"
+        if [ -n "$BASELINE" ] && [ -s "$TMP/compare" ]; then
+            printf '\n| Change vs baseline | Check | Was -> now | Detail |\n|---|---|---|---|\n'
+            awk -F'\t' '{ gsub(/\|/, "\\|"); print "| " $1 " | `" $2 "` | " $3 " | " $4 " |" }' "$TMP/compare"
+        fi
+        printf '\n| Check | Result | Level | Class | Detail |\n|---|---|---|---|---|\n'
+        awk -F'\t' '{ gsub(/\|/, "\\|", $5); print "| `" $1 "` | " $2 " | " $3 " | " $4 " | " $5 " |" }' "$RES"
+        printf '\nLevels: *probe* = DT node enabled and a driver bound; *function* = the feature did something observable.\n'
+        printf 'Each result has a `repro:` command and raw evidence in `ktap.txt`. Generated by vf2-selftest %s.\n' "$VERSION"
+    } >"$md"
+    diag "# wrote $OUTDIR/ktap.txt $OUTDIR/results.tsv $OUTDIR/report.md"
+fi
+
+if [ -n "$BASELINE" ]; then
+    [ "$REG" = 0 ]; exit $?
+fi
+[ "$F" = 0 ]

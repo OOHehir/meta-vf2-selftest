@@ -1,0 +1,11 @@
+
+VisionFive 2 self-test build (oe-core + meta-riscv + meta-vf2-selftest, nodistro,
+linux-mainline). Targets:
+
+    vf2-selftest-image          minimal bootable image carrying vf2-selftest
+    vf2-selftest                just the script (drop into any image)
+
+On-board:    vf2-selftest -o /tmp/st     (KTAP on stdout; results.tsv, report.md in /tmp/st)
+On hardware via oeqa (set TEST_TARGET_IP / TEST_SERVER_IP in local.conf first):
+             bitbake vf2-selftest-image -c testimage
+

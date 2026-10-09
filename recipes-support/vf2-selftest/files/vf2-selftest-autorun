@@ -1,0 +1,19 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          vf2-selftest-autorun
+# Required-Start:    $local_fs $network
+# Default-Start:     5
+# Short-Description: Run vf2-selftest once per boot, log to console and /var/log
+### END INIT INFO
+# Results are bracketed on the console so a serial capture can scrape them.
+[ "${1:-start}" = start ] || exit 0
+id=$(cut -c1-8 /proc/sys/kernel/random/boot_id)
+out=/var/log/vf2-selftest/$(date -u +%Y%m%dT%H%M%S)-$id
+args=$(cat /etc/default/vf2-selftest 2>/dev/null)
+{
+    echo "=== VF2-SELFTEST BEGIN $out ==="
+    vf2-selftest -q -o "$out" $args
+    echo "=== VF2-SELFTEST END rc=$? ==="
+} >/dev/console 2>&1
+ln -sfn "$out" /var/log/vf2-selftest/latest
+exit 0

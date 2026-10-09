@@ -1,0 +1,13 @@
+# The smallest layer set meta-riscv supports, so results describe that baseline
+# rather than meta-oe/meta-poky/the demo layer.
+
+LCONF_VERSION = "7"
+
+BBPATH = "${TOPDIR}"
+BBFILES ?= ""
+
+BBLAYERS ?= " \
+  ##OEROOT##/meta \
+  ##OEROOT##/../meta-riscv \
+  ##OEROOT##/../../meta-vf2-selftest \
+"
