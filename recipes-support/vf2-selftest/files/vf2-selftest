@@ -119,6 +119,13 @@ fi
 [ "$(id -u)" = 0 ] || { echo "vf2-selftest: must run as root" >&2; exit 2; }
 [ -z "$BASELINE" ] || [ -r "$BASELINE" ] || { echo "cannot read baseline $BASELINE" >&2; exit 2; }
 
+# A run changes cpufreq limits, PWM & hw_random state, so a concurrent one (boot
+# autorun vs testimage) would see the other's changes: wait for it instead.
+if command -v flock >/dev/null 2>&1 && [ -d /run ] && [ -w /run ]; then
+    exec 9>/run/vf2-selftest.lock
+    flock -n 9 || { echo "vf2-selftest: waiting for another run to finish" >&2; flock 9; }
+fi
+
 TMP=$(mktemp -d /tmp/vf2-selftest.XXXXXX) || exit 2
 KTAP=$TMP/ktap.txt; RES=$TMP/results.tsv; ENVF=$TMP/env.tsv; UNDO=$TMP/undo
 DTIDX=$TMP/dt.idx; DEVIDX=$TMP/dev.idx
