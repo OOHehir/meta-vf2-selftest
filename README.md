@@ -6,8 +6,9 @@ between kernels and patches.
 
 The layer depends on **oe-core only**. The self-test build uses nothing but
 bitbake + oe-core + meta-riscv + this layer: the same minimal set meta-riscv
-declares. That way the results describe that baseline, not meta-oe,
-meta-poky or the demo layer in this repo.
+declares. That way the results describe that baseline, not meta-oe, meta-poky
+or the demo layer in
+[starfive-visionfive2-yocto](https://github.com/OOHehir/starfive-visionfive2-yocto).
 
 ## Contents
 
@@ -24,22 +25,48 @@ meta-poky or the demo layer in this repo.
 
 ## Build
 
-```bash
-./setup-layers --destdir sources        # once
-scripts/bb-selftest.sh vf2-selftest-image
-# == TEMPLATECONF=$PWD/meta-vf2-selftest/conf/templates/default \
-#      source sources/oe-core/oe-init-build-env build-selftest && bitbake vf2-selftest-image
+The `bblayers.conf` template expects this layout, which is the one
+starfive-visionfive2-yocto uses:
+
+```
+<top>/
+├── meta-vf2-selftest/       this repository
+└── sources/
+    ├── bitbake/
+    ├── oe-core/
+    └── meta-riscv/
 ```
 
-The output goes to `build-selftest/tmp/deploy/images/visionfive2/vf2-selftest-image-visionfive2.rootfs.wic.gz`.
-This build is independent of `build/` (the demo) and `build-vanilla/`.
-
-The same image with the StarFive vendor kernel (6.12 fork plus its closed
-GPU/VPU modules) builds in its own directory:
+Then, from `<top>`:
 
 ```bash
-scripts/bb-selftest.sh --vendor vf2-selftest-image     # -> build-selftest-vendor/
+TEMPLATECONF=$PWD/meta-vf2-selftest/conf/templates/default \
+    source sources/oe-core/oe-init-build-env build-selftest
+bitbake vf2-selftest-image
 ```
+
+Where:
+- `TEMPLATECONF` seeds `conf/local.conf` & `conf/bblayers.conf` only when the
+  build directory is new; an existing one keeps its own
+- `build-selftest` is the build directory; any name will do
+
+The image is
+`build-selftest/tmp/deploy/images/visionfive2/vf2-selftest-image-visionfive2.rootfs.wic.gz`.
+Inside starfive-visionfive2-yocto, `scripts/bb-selftest.sh vf2-selftest-image`
+does the same.
+
+For the StarFive vendor kernel (6.12 fork plus its closed GPU/VPU modules), use
+a second build directory & select the kernel in its `conf/auto.conf`:
+
+```bash
+TEMPLATECONF=$PWD/meta-vf2-selftest/conf/templates/default \
+    source sources/oe-core/oe-init-build-env build-selftest-vendor
+echo 'VF2_KERNEL = "vendor"' > conf/auto.conf
+bitbake vf2-selftest-image
+```
+
+`scripts/bb-selftest.sh --vendor vf2-selftest-image` does the same in
+starfive-visionfive2-yocto.
 
 The two builds use the same layers, `local.conf`, U-Boot, OpenSBI and
 userspace. Only `VF2_KERNEL` in `conf/auto.conf` differs, so a difference in
@@ -74,7 +101,7 @@ Under oeqa (set `TEST_TARGET_IP` and `TEST_SERVER_IP` in `local.conf`, then boot
 the board on the image):
 
 ```bash
-scripts/bb-selftest.sh vf2-selftest-image -c testimage
+bitbake vf2-selftest-image -c testimage        # in the build environment above
 # reports copied to build-selftest/tmp/work/.../vf2-selftest-image/*/vf2-selftest/
 ```
 
