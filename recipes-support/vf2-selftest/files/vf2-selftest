@@ -699,7 +699,8 @@ for m in "mmc0 16010000 eMMC" "mmc1 16020000 microSD"; do
             continue
         fi
         blk=$(ls "$card/block" 2>/dev/null | head -n1)
-        ev "card: type=$(cat $card/type) name=$(cat $card/name 2>/dev/null) size=$(( $(cat /sys/block/$blk/size) / 2048 )) MiB"
+        sz=""; [ -n "$blk" ] && sz=$(( $(cat "/sys/block/$blk/size") / 2048 ))
+        ev "card: type=$(cat $card/type) name=$(cat $card/name 2>/dev/null) size=${sz:-?} MiB"
         ev "$(grep -E 'clock|timing spec|bus width' /sys/kernel/debug/${host##*/}/ios 2>/dev/null)"
         repro "echo 3 > /proc/sys/vm/drop_caches; dd if=/dev/$blk of=/dev/null bs=1M count=32"
         if [ -n "$blk" ] && read_test "/dev/$blk" 32; then
