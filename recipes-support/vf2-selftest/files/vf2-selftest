@@ -171,6 +171,8 @@ envset() { v=$(oneline "$2"); printf '%s\t%s\n' "$1" "$v" >>"$ENVF"; diag "# env
 
 # --- Small helpers ---
 have() { command -v "$1" >/dev/null 2>&1; }
+# tmo SECS CMD...: oe-core's busybox has no timeout applet, so run unbounded without it.
+tmo() { if have timeout; then timeout "$@"; else shift; "$@"; fi; }
 rd()   { [ -r "$1" ] && tr -d '\0' <"$1" 2>/dev/null; }
 uptime_cs() { awk '{ printf "%d", $1 * 100 }' /proc/uptime; }
 PDT=/proc/device-tree
@@ -649,7 +651,7 @@ if probe_check trng.probe starfive,jh7110-trng 1600c000 CONFIG_HW_RANDOM_JH7110 
     ev "rng_available='$avail' rng_current='$cur'"
     if [ -n "$mine" ]; then
         [ "$cur" != "$mine" ] && { echo "echo $cur > $HR/rng_current" >>"$UNDO"; echo "$mine" >$HR/rng_current; }
-        timeout 10 dd if=/dev/hwrng of="$TMP/rng" bs=4096 count=1 2>/dev/null
+        tmo 10 dd if=/dev/hwrng of="$TMP/rng" bs=4096 count=1 2>/dev/null
         [ "$cur" != "$mine" ] && echo "$cur" >$HR/rng_current
         nb=$(wc -c <"$TMP/rng" 2>/dev/null); nb=${nb:-0}
         nu=$(od -An -v -tu1 "$TMP/rng" 2>/dev/null | tr -s ' ' '\n' | grep -v '^$' | sort -u | grep -c .)
@@ -921,7 +923,7 @@ if probe_check audio.card simple-audio-card "" CONFIG_SND_SIMPLE_CARD "PWM-DAC s
         res SKIP audio.play function option "aplay not installed"
     else
         repro "aplay -D plughw:$cidx,0 -f S16_LE -r 48000 -c 2 -d 1 /dev/zero"
-        if ao=$(timeout 15 aplay -q -D "plughw:$cidx,0" -f S16_LE -r 48000 -c 2 -d 1 /dev/zero 2>&1); then
+        if ao=$(tmo 15 aplay -q -D "plughw:$cidx,0" -f S16_LE -r 48000 -c 2 -d 1 /dev/zero 2>&1); then
             res PASS audio.play function "" "1 s of silence played on card $cidx (no audio output observed)"
         else
             ev "$ao"
