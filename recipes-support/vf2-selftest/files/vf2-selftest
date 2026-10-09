@@ -201,7 +201,8 @@ read_test() {
 #            (disabled if the node or any ancestor has status != okay)
 #   dev.idx: <node path> TAB <sysfs device dir> TAB <bound driver or empty>
 build_indexes() {
-    find "$PDT" -name compatible -type f 2>/dev/null | sort | while IFS= read -r f; do
+    # Trailing slash: /proc/device-tree is a symlink, which find will not enter.
+    find "$PDT/" -name compatible -type f 2>/dev/null | sort | while IFS= read -r f; do
         n=${f%/compatible}; p=${n#"$PDT"}; [ -n "$p" ] || p=/
         stt=okay; [ -r "$n/status" ] && stt=$(rd "$n/status")
         printf '%s\t%s\t%s\n' "$p" "$stt" "$(tr '\0' ' ' <"$f")"
