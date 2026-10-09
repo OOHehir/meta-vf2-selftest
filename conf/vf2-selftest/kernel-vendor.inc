@@ -11,4 +11,4 @@ LICENSE_FLAGS_ACCEPTED += "commercial"
 PREMIRRORS:append = " \
     git://strlcat.eu/mirroring/jh7110_soft_3rdpart.git git://github.com/starfive-tech/soft_3rdpart.git;protocol=https \n \
 "
-# Kernel config change: see recipes-kernel/linux/linux-starfive-dev.bbappend.
+# Kernel config change: see dynamic-layers/riscv-layer/recipes-kernel/linux/linux-starfive-dev.bbappend.

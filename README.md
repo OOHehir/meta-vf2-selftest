@@ -20,7 +20,7 @@ meta-poky or the demo layer in this repo.
 | `lib/oeqa/runtime/cases/vf2_selftest.py` | An oeqa runtime case, so `bitbake -c testimage` runs the self-test on real hardware. |
 | `conf/templates/default/` | `local.conf` and `bblayers.conf` templates for the minimal build (nodistro). The kernel is chosen with `VF2_KERNEL`. |
 | `conf/vf2-selftest/kernel-{mainline,vendor}.inc` | Each kernel's deviations from meta-riscv defaults, with the reason for each. |
-| `recipes-kernel/linux/linux-starfive-dev.bbappend` | The vendor build's single kernel change: `RANDSTRUCT_NONE`. Without it, the closed GPU module soft-locks at init. |
+| `dynamic-layers/riscv-layer/recipes-kernel/linux/linux-starfive-dev.bbappend` | The vendor build's single kernel change: `RANDSTRUCT_NONE`. Without it, the closed GPU module soft-locks at init. |
 
 ## Build
 
