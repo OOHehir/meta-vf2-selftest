@@ -182,6 +182,9 @@ have() { command -v "$1" >/dev/null 2>&1; }
 tmo() { if have timeout; then timeout "$@"; else shift; "$@"; fi; }
 rd()   { [ -r "$1" ] && tr -d '\0' <"$1" 2>/dev/null; }
 uptime_cs() { awk '{ printf "%d", $1 * 100 }' /proc/uptime; }
+# bytes FILE: one octal byte per line (0xff = 377). oe-core's busybox od has no
+# -A/-t (those need CONFIG_DESKTOP), so only -b & -v, which GNU od also has.
+bytes() { od -v -b "$1" | awk '{ for (i = 2; i <= NF; i++) print $i }'; }
 PDT=/proc/device-tree
 MODDIR=/lib/modules/$(uname -r)
 
@@ -521,7 +524,7 @@ if probe_check eeprom.probe atmel,24c04 50 CONFIG_EEPROM_AT24 "board ID EEPROM";
     nv=$(find "$DEV/" -maxdepth 2 \( -name eeprom -o -name nvmem \) 2>/dev/null | head -n1)
     repro "hexdump -C $nv | head"
     if [ -n "$nv" ] && dd if="$nv" of="$TMP/eeprom" bs=512 count=1 2>/dev/null &&
-       [ "$(od -An -v -tx1 "$TMP/eeprom" | tr -s ' ' '\n' | grep -v -e '^$' -e '^ff$' -e '^00$' | grep -c .)" -gt 0 ]; then
+       [ "$(bytes "$TMP/eeprom" | grep -v -e '^377$' -e '^000$' | grep -c .)" -gt 0 ]; then
         ev "strings: $(tr -c '[:print:]' '\n' <"$TMP/eeprom" | grep -E '.{5,}' | head -n 4 | tr '\n' ' ')"
         res PASS eeprom.read function "" "read 512 bytes, contents not blank"
     else
@@ -661,8 +664,8 @@ if probe_check trng.probe starfive,jh7110-trng 1600c000 CONFIG_HW_RANDOM_JH7110 
         tmo 10 dd if=/dev/hwrng of="$TMP/rng" bs=4096 count=1 2>/dev/null
         [ "$cur" != "$mine" ] && echo "$cur" >$HR/rng_current
         nb=$(wc -c <"$TMP/rng" 2>/dev/null); nb=${nb:-0}
-        nu=$(od -An -v -tu1 "$TMP/rng" 2>/dev/null | tr -s ' ' '\n' | grep -v '^$' | sort -u | grep -c .)
-        repro "echo $mine > $HR/rng_current; dd if=/dev/hwrng bs=4096 count=1 | od -An -tu1 | tr -s ' ' '\\n' | sort -u | wc -l"
+        nu=$(bytes "$TMP/rng" 2>/dev/null | sort -u | grep -c .)
+        repro "echo $mine > $HR/rng_current; dd if=/dev/hwrng bs=4096 count=1 | od -v -b | awk '{ for (i = 2; i <= NF; i++) print \$i }' | sort -u | wc -l"
         ev "read $nb bytes, $nu distinct byte values"
         # 4096 uniform bytes miss one of 256 values with p ~ 3e-5
         if [ "$nb" = 4096 ] && [ "$nu" -ge 250 ]; then
@@ -730,7 +733,7 @@ if probe_check qspi.flash jedec,spi-nor 0 CONFIG_MTD_SPI_NOR "QSPI NOR flash"; t
     mtd=$(awk -F: '/"spl"/ { print $1; exit }' /proc/mtd); mtd=${mtd:-mtd0}
     repro "dd if=/dev/$mtd bs=64k count=1 | hexdump -C | head"
     if dd if="/dev/$mtd" of="$TMP/nor" bs=65536 count=1 2>/dev/null &&
-       [ "$(od -An -v -tx1 "$TMP/nor" | tr -s ' ' '\n' | grep -v -e '^$' -e '^ff$' | grep -c .)" -gt 0 ]; then
+       [ "$(bytes "$TMP/nor" | grep -v '^377$' | grep -c .)" -gt 0 ]; then
         res PASS qspi.read function "" "read 64 KiB from /dev/$mtd (contents not erased)"
     else
         res FAIL qspi.read function function "could not read /dev/$mtd, or it is blank"
