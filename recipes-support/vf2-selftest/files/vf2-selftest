@@ -564,7 +564,10 @@ done
 
 # --- Low-speed peripherals ---
 if probe_check uart0.probe snps,dw-apb-uart 10000000 CONFIG_SERIAL_8250_DW "UART0 (debug console)"; then
-    tty=$(ls "$DEV/tty" 2>/dev/null | head -n1)
+    # The tty hangs off a serial-core port device below $DEV, not $DEV itself.
+    tty=$(for t in /sys/class/tty/*; do
+              case "$(readlink -f "$t")" in "$DEV"/*) basename "$t" ;; esac
+          done | head -n1)
     repro "cat /proc/consoles"
     ev "$(cat /proc/consoles)"
     if [ -n "$tty" ] && grep -q "^$tty " /proc/consoles; then
