@@ -463,7 +463,8 @@ fi
 POL=/sys/devices/system/cpu/cpufreq/policy0
 VDD=""
 for r in /sys/class/regulator/regulator.*; do
-    [ "$(cat "$r/name" 2>/dev/null)" = vdd_cpu ] && VDD=$r
+    # mainline names it vdd_cpu, the vendor 6.12 DT vdd-cpu
+    case "$(cat "$r/name" 2>/dev/null)" in vdd_cpu|vdd-cpu) VDD=$r ;; esac
 done
 repro "cat $POL/scaling_driver $POL/scaling_available_frequencies"
 if [ -d "$POL" ]; then
