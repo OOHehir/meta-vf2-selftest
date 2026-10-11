@@ -1,0 +1,40 @@
+From 5d66fe97e38403e3afc37038ee7fb1e3d457023f Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Thu, 30 Apr 2026 18:06:06 -0400
+Subject: [PATCH 33/37] drm/imagination: don't flush the MMU on unmap after the
+ device is lost
+
+(cherry picked from commit e63d7bb2e26ac35308a89c1c15227192e567ae40)
+Upstream-Status: Pending [from https://github.com/domibel/linux branch powervr_on_jh7110_visionfive2_v7.3-rc5]
+
+---
+ drivers/gpu/drm/imagination/pvr_queue.c   | 1 +
+ drivers/gpu/drm/imagination/pvr_vm_mips.c | 3 +++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_queue.c b/drivers/gpu/drm/imagination/pvr_queue.c
+index 92c5366d95f2..d098b7d42536 100644
+--- a/drivers/gpu/drm/imagination/pvr_queue.c
++++ b/drivers/gpu/drm/imagination/pvr_queue.c
+@@ -8,6 +8,7 @@
+ #include "pvr_context.h"
+ #include "pvr_device.h"
+ #include "pvr_drv.h"
++#include "pvr_fw.h"
+ #include "pvr_hwrt.h"
+ #include "pvr_job.h"
+ #include "pvr_queue.h"
+diff --git a/drivers/gpu/drm/imagination/pvr_vm_mips.c b/drivers/gpu/drm/imagination/pvr_vm_mips.c
+index 5847a1c92bea..9cb64dd6251e 100644
+--- a/drivers/gpu/drm/imagination/pvr_vm_mips.c
++++ b/drivers/gpu/drm/imagination/pvr_vm_mips.c
+@@ -232,6 +232,9 @@ pvr_vm_mips_unmap(struct pvr_device *pvr_dev, struct pvr_fw_object *fw_obj)
+ 	for (u32 pfn = start_pfn; pfn < end_pfn; pfn++)
+ 		WRITE_ONCE(mips_data->pt[pfn], 0);
+ 
++	if (pvr_dev->lost)
++		return;
++
+ 	pvr_mmu_flush_request_all(pvr_dev);
+ 	WARN_ON(pvr_mmu_flush_exec(pvr_dev, true));
+ }

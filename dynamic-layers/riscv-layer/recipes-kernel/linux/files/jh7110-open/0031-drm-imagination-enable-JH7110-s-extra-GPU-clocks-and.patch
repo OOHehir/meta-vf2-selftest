@@ -1,0 +1,258 @@
+From 22976b0b32d50ed105f9e990ca4edd99b435fb17 Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Sun, 26 Apr 2026 00:03:25 +0000
+Subject: [PATCH 31/37] drm/imagination: enable JH7110's extra GPU clocks and
+ secondary reset line
+
+$ cat /proc/device-tree/model
+StarFive VisionFive 2 v1.3B
+
+$ sudo dmesg | grep powervr
+powervr 18000000.gpu: [drm] loaded firmware powervr/rogue_36.50.54.182_v1.fw
+powervr 18000000.gpu: [drm] FW version v1.1 (build 6976702 OS)
+
+$ PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1 vulkaninfo --summary
+
+'DISPLAY' environment variable not set... skipping surface info
+MESA: warning: Core count fetching is unimplemented. Setting 1 for now.
+WARNING: powervr is not a conformant Vulkan implementation, testing use only.
+WARNING: [Loader Message] Code 0 : ICD for selected physical device does not export vkGetPhysicalDeviceDisplayPlanePropertiesKHR!
+WARNING: [Loader Message] Code 0 : ICD for selected physical device does not export vkGetPhysicalDeviceDisplayPropertiesKHR!
+==========
+VULKANINFO
+==========
+
+Vulkan Instance Version: 1.4.341
+
+Instance Extensions: count = 26
+-------------------------------
+VK_EXT_acquire_drm_display             : extension revision 1
+VK_EXT_acquire_xlib_display            : extension revision 1
+VK_EXT_debug_report                    : extension revision 10
+VK_EXT_debug_utils                     : extension revision 2
+VK_EXT_direct_mode_display             : extension revision 1
+VK_EXT_display_surface_counter         : extension revision 1
+VK_EXT_headless_surface                : extension revision 1
+VK_EXT_layer_settings                  : extension revision 2
+VK_EXT_surface_maintenance1            : extension revision 1
+VK_EXT_swapchain_colorspace            : extension revision 5
+VK_KHR_device_group_creation           : extension revision 1
+VK_KHR_display                         : extension revision 23
+VK_KHR_external_fence_capabilities     : extension revision 1
+VK_KHR_external_memory_capabilities    : extension revision 1
+VK_KHR_external_semaphore_capabilities : extension revision 1
+VK_KHR_get_display_properties2         : extension revision 1
+VK_KHR_get_physical_device_properties2 : extension revision 2
+VK_KHR_get_surface_capabilities2       : extension revision 1
+VK_KHR_portability_enumeration         : extension revision 1
+VK_KHR_surface                         : extension revision 25
+VK_KHR_surface_maintenance1            : extension revision 1
+VK_KHR_surface_protected_capabilities  : extension revision 1
+VK_KHR_wayland_surface                 : extension revision 6
+VK_KHR_xcb_surface                     : extension revision 6
+VK_KHR_xlib_surface                    : extension revision 6
+VK_LUNARG_direct_driver_loading        : extension revision 1
+
+Instance Layers: count = 5
+--------------------------
+VK_LAYER_INTEL_nullhw       INTEL NULL HW                                                1.1.73   version 1
+VK_LAYER_MESA_anti_lag      Open-source implementation of the VK_AMD_anti_lag extension. 1.4.303  version 1
+VK_LAYER_MESA_device_select Linux device selection layer                                 1.4.303  version 1
+VK_LAYER_MESA_overlay       Mesa Overlay layer                                           1.4.303  version 1
+VK_LAYER_MESA_screenshot    Mesa Screenshot layer                                        1.4.303  version 1
+
+Devices:
+========
+GPU0:
+        apiVersion         = 1.2.348
+        driverVersion      = 26.1.0
+        vendorID           = 0x1010
+        deviceID           = 0x36054182
+        deviceType         = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+        deviceName         = PowerVR B-Series BXE-4-32 MC1
+        driverID           = DRIVER_ID_IMAGINATION_OPEN_SOURCE_MESA
+        driverName         = Imagination open-source Mesa driver
+        driverInfo         = Mesa 26.1.0~rc1-1
+        conformanceVersion = 1.3.8.4
+        deviceUUID         = 24b1ada6-eb24-5172-55c6-fa2b276f833d
+        driverUUID         = e040a9ab-76c8-b8ed-bd85-3a9a24eeb38e
+GPU1:
+        apiVersion         = 1.4.348
+        driverVersion      = 26.1.0
+        vendorID           = 0x10005
+        deviceID           = 0x0000
+        deviceType         = PHYSICAL_DEVICE_TYPE_CPU
+        deviceName         = llvmpipe (LLVM 21.1.8, 128 bits)
+        driverID           = DRIVER_ID_MESA_LLVMPIPE
+        driverName         = llvmpipe
+        driverInfo         = Mesa 26.1.0~rc1-1 (LLVM 21.1.8)
+        conformanceVersion = 1.3.1.1
+        deviceUUID         = 6d657361-3236-2e31-2e30-7e7263312d00
+        driverUUID         = 6c6c766d-7069-7065-5555-494400000000
+
+(cherry picked from commit 3833066ecdf4991155b01b946487cf81cb7154ac)
+Upstream-Status: Pending [from https://github.com/domibel/linux branch powervr_on_jh7110_visionfive2_v7.3-rc5]
+
+---
+ drivers/gpu/drm/imagination/pvr_device.c | 21 ++++++++++
+ drivers/gpu/drm/imagination/pvr_device.h |  8 ++++
+ drivers/gpu/drm/imagination/pvr_power.c  | 52 ++++++++++++++++++++++--
+ 3 files changed, 78 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_device.c b/drivers/gpu/drm/imagination/pvr_device.c
+index 6732877599e5..ad941ac504c2 100644
+--- a/drivers/gpu/drm/imagination/pvr_device.c
++++ b/drivers/gpu/drm/imagination/pvr_device.c
+@@ -100,6 +100,9 @@ static int pvr_device_clk_init(struct pvr_device *pvr_dev)
+ 	struct clk *core_clk;
+ 	struct clk *sys_clk;
+ 	struct clk *mem_clk;
++	struct clk *apb_clk;
++	struct clk *core_clk_gate;
++	struct clk *rtc_clk;
+ 
+ 	core_clk = devm_clk_get(drm_dev->dev, "core");
+ 	if (IS_ERR(core_clk))
+@@ -116,9 +119,27 @@ static int pvr_device_clk_init(struct pvr_device *pvr_dev)
+ 		return dev_err_probe(drm_dev->dev, PTR_ERR(mem_clk),
+ 				     "failed to get mem clock\n");
+ 
++	apb_clk = devm_clk_get_optional(drm_dev->dev, "apb");
++	if (IS_ERR(apb_clk))
++		return dev_err_probe(drm_dev->dev, PTR_ERR(apb_clk),
++				     "failed to get apb clock\n");
++
++	core_clk_gate = devm_clk_get_optional(drm_dev->dev, "core_clk");
++	if (IS_ERR(core_clk_gate))
++		return dev_err_probe(drm_dev->dev, PTR_ERR(core_clk_gate),
++				     "failed to get core_clk clock\n");
++
++	rtc_clk = devm_clk_get_optional(drm_dev->dev, "rtc");
++	if (IS_ERR(rtc_clk))
++		return dev_err_probe(drm_dev->dev, PTR_ERR(rtc_clk),
++				     "failed to get rtc clock\n");
++
+ 	pvr_dev->core_clk = core_clk;
+ 	pvr_dev->sys_clk = sys_clk;
+ 	pvr_dev->mem_clk = mem_clk;
++	pvr_dev->apb_clk = apb_clk;
++	pvr_dev->core_clk_gate = core_clk_gate;
++	pvr_dev->rtc_clk = rtc_clk;
+ 
+ 	return 0;
+ }
+diff --git a/drivers/gpu/drm/imagination/pvr_device.h b/drivers/gpu/drm/imagination/pvr_device.h
+index d51c57cf9332..6bf4dade2b24 100644
+--- a/drivers/gpu/drm/imagination/pvr_device.h
++++ b/drivers/gpu/drm/imagination/pvr_device.h
+@@ -148,6 +148,12 @@ struct pvr_device {
+ 	 */
+ 	struct clk *mem_clk;
+ 
++	struct clk *apb_clk;
++
++	struct clk *core_clk_gate;
++
++	struct clk *rtc_clk;
++
+ 	/**
+ 	 * @power: Optional power domain devices.
+ 	 *
+@@ -170,6 +176,8 @@ struct pvr_device {
+ 	 */
+ 	struct reset_control *reset;
+ 
++	struct reset_control *reset_doma;
++
+ 	/** @pwrseq: Pointer to a power sequencer, if one is used. */
+ 	struct pwrseq_desc *pwrseq;
+ 
+diff --git a/drivers/gpu/drm/imagination/pvr_power.c b/drivers/gpu/drm/imagination/pvr_power.c
+index a71d5b35601e..23c775ea6aa5 100644
+--- a/drivers/gpu/drm/imagination/pvr_power.c
++++ b/drivers/gpu/drm/imagination/pvr_power.c
+@@ -266,6 +266,11 @@ static int pvr_power_init_manual(struct pvr_device *pvr_dev)
+ 
+ 	pvr_dev->reset = reset;
+ 
++	pvr_dev->reset_doma = devm_reset_control_get_optional_exclusive(drm_dev->dev, "doma");
++	if (IS_ERR(pvr_dev->reset_doma))
++		return dev_err_probe(drm_dev->dev, PTR_ERR(pvr_dev->reset_doma),
++				     "failed to get gpu secondary reset line\n");
++
+ 	return 0;
+ }
+ 
+@@ -285,6 +290,18 @@ static int pvr_power_on_sequence_manual(struct pvr_device *pvr_dev)
+ 	if (err)
+ 		goto err_sys_clk_disable;
+ 
++	err = clk_prepare_enable(pvr_dev->apb_clk);
++	if (err)
++		goto err_mem_clk_disable;
++
++	err = clk_prepare_enable(pvr_dev->core_clk_gate);
++	if (err)
++		goto err_apb_clk_disable;
++
++	err = clk_prepare_enable(pvr_dev->rtc_clk);
++	if (err)
++		goto err_core_clk_gate_disable;
++
+ 	/*
+ 	 * According to the hardware manual, a delay of at least 32 clock
+ 	 * cycles is required between de-asserting the clkgen reset and
+@@ -297,10 +314,29 @@ static int pvr_power_on_sequence_manual(struct pvr_device *pvr_dev)
+ 
+ 	err = reset_control_deassert(pvr_dev->reset);
+ 	if (err)
+-		goto err_mem_clk_disable;
++		goto err_rtc_clk_disable;
++
++	if (pvr_dev->reset_doma) {
++		udelay(1);
++		err = reset_control_deassert(pvr_dev->reset_doma);
++		if (err)
++			goto err_reset_assert;
++	}
+ 
+ 	return 0;
+ 
++err_reset_assert:
++	reset_control_assert(pvr_dev->reset);
++
++err_rtc_clk_disable:
++	clk_disable_unprepare(pvr_dev->rtc_clk);
++
++err_core_clk_gate_disable:
++	clk_disable_unprepare(pvr_dev->core_clk_gate);
++
++err_apb_clk_disable:
++	clk_disable_unprepare(pvr_dev->apb_clk);
++
+ err_mem_clk_disable:
+ 	clk_disable_unprepare(pvr_dev->mem_clk);
+ 
+@@ -315,10 +351,20 @@ static int pvr_power_on_sequence_manual(struct pvr_device *pvr_dev)
+ 
+ static int pvr_power_off_sequence_manual(struct pvr_device *pvr_dev)
+ {
+-	int err;
++	int err, err2;
+ 
+-	err = reset_control_assert(pvr_dev->reset);
++	err = 0;
++	if (pvr_dev->reset_doma) {
++		err = reset_control_assert(pvr_dev->reset_doma);
++		udelay(1);
++	}
++	err2 = reset_control_assert(pvr_dev->reset);
++	if (err2 && !err)
++		err = err2;
+ 
++	clk_disable_unprepare(pvr_dev->rtc_clk);
++	clk_disable_unprepare(pvr_dev->core_clk_gate);
++	clk_disable_unprepare(pvr_dev->apb_clk);
+ 	clk_disable_unprepare(pvr_dev->mem_clk);
+ 	clk_disable_unprepare(pvr_dev->sys_clk);
+ 	clk_disable_unprepare(pvr_dev->core_clk);

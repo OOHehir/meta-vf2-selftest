@@ -1,0 +1,29 @@
+From ab8a10ad020fdd064904d9ba2183e697c17144ad Mon Sep 17 00:00:00 2001
+From: Michal Wilczynski <m.wilczynski@samsung.com>
+Date: Tue, 29 Sep 2026 12:31:03 +0200
+Subject: [PATCH 06/37] dt-bindings: display: verisilicon: Add
+ starfive,jh7110-dc8200
+
+The JH7110 embeds a DC8200. The binding requires an SoC specific
+compatible ahead of the generic one, so add the JH7110 to the enum.
+
+Signed-off-by: Michal Wilczynski <m.wilczynski@samsung.com>
+(cherry picked from commit 8467f61e42ec0b4a934538eb4e0fb76eaa3a648f)
+Upstream-Status: Submitted [v3 https://ratatoskr.run/dri-devel/2026/09/17514319/t (JH7110 display subsystem series, 2026-09-04); from https://github.com/domibel/linux branch jh7110_dc8200_hdmi_v7.3-rc5]
+
+---
+ Documentation/devicetree/bindings/display/verisilicon,dc.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/display/verisilicon,dc.yaml b/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
+index 9dc35ab973f2..7443b2357075 100644
+--- a/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
++++ b/Documentation/devicetree/bindings/display/verisilicon,dc.yaml
+@@ -16,6 +16,7 @@ properties:
+   compatible:
+     items:
+       - enum:
++          - starfive,jh7110-dc8200
+           - thead,th1520-dc8200
+       - const: verisilicon,dc # DC IPs have discoverable ID/revision registers
+ 

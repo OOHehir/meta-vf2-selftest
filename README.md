@@ -20,7 +20,8 @@ or the demo layer in
 | `recipes-core/images/vf2-selftest-image.bb` | A minimal console image with the above, kernel modules and dropbear. |
 | `lib/oeqa/runtime/cases/vf2_selftest.py` | An oeqa runtime case, so `bitbake -c testimage` runs the self-test on real hardware. |
 | `conf/templates/default/` | `local.conf` and `bblayers.conf` templates for the minimal build (nodistro). The kernel is chosen with `VF2_KERNEL`. |
-| `conf/vf2-selftest/kernel-{mainline,vendor,machine}.inc` | Each kernel's deviations from meta-riscv defaults, with the reason for each. |
+| `conf/vf2-selftest/kernel-{mainline,vendor,machine,open}.inc` | Each kernel's deviations from meta-riscv defaults, with the reason for each. |
+| `dynamic-layers/riscv-layer/recipes-kernel/linux/linux-mainline.bbappend` | `VF2_KERNEL = "open"` only: the out-of-tree display & GPU patches (`files/jh7110-open/`) & config fragment. |
 | `recipes-kernel/powervr-firmware-jh7110/` | Imagination's binary GPU firmware for the open PowerVR driver; upstream linux-firmware lacks this core. |
 | `dynamic-layers/riscv-layer/recipes-kernel/linux/linux-starfive-dev.bbappend` | The vendor build's single kernel change: `RANDSTRUCT_NONE`. Without it, the out-of-tree GPU module soft-locks at init. |
 
@@ -76,11 +77,12 @@ each report shows this: `u-boot`, `sbi` and `os` should match, while
 `kernel*` and `fdt.md5` differ. The vendor build needs `git-lfs` on the host
 for the GPU/VPU blobs.
 
-One more mode selects the kernel the same way:
+Two more modes select the kernel the same way:
 
 | `VF2_KERNEL` | Kernel |
 |---|---|
 | `machine` | Whatever the `MACHINE` selects, unchanged; for testing a machine as submitted. |
+| `open` | linux-mainline plus out-of-tree DC8200, HDMI & PowerVR drivers, with Mesa's PowerVR Vulkan driver. Experimental. Vulkan needs `PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1`, as the driver is not conformant on this core. |
 
 The script itself has no build dependency. To test another image, for
 example the vendor 6.12 demo image, copy it over and run it:

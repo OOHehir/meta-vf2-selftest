@@ -1,0 +1,25 @@
+From 41854617a42b8968b11bccbfcca5a49e30631f67 Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Sun, 3 May 2026 10:54:18 -0400
+Subject: [PATCH 27/37] drm/imagination: skip the gpu supported test
+
+(cherry picked from commit 25b3a27d855915ea846da07b47c05b8d17a2ada1)
+Upstream-Status: Inappropriate [bring-up hack: bypasses the driver's supported-core check; from https://github.com/domibel/linux branch powervr_on_jh7110_visionfive2_v7.3-rc5]
+
+---
+ drivers/gpu/drm/imagination/pvr_device.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_device.c b/drivers/gpu/drm/imagination/pvr_device.c
+index 2691ef9af0ca..6732877599e5 100644
+--- a/drivers/gpu/drm/imagination/pvr_device.c
++++ b/drivers/gpu/drm/imagination/pvr_device.c
+@@ -546,6 +546,8 @@ static int
+ pvr_check_gpu_supported(struct pvr_device *pvr_dev,
+ 			const struct pvr_gpu_id *gpu_id)
+ {
++	/* skip the gpu supported test */
++	return 0;
+ 	struct drm_device *drm_dev = from_pvr_device(pvr_dev);
+ 
+ 	switch (pvr_gpu_support_level(gpu_id)) {

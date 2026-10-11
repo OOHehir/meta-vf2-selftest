@@ -1,0 +1,33 @@
+From bb6a4bc5b7eab1f1ec0a00a6c5b6f03b3d2bd939 Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Sat, 2 May 2026 22:21:07 -0400
+Subject: [PATCH 34/37] drm/imagination: fix wrong vm_bo passed to
+ drm_gpuva_link in remap
+
+(cherry picked from commit 6a517afff74d05647d781721ce68d05a22939b2c)
+Upstream-Status: Pending [from https://github.com/domibel/linux branch powervr_on_jh7110_visionfive2_v7.3-rc5]
+
+---
+ drivers/gpu/drm/imagination/pvr_vm.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_vm.c b/drivers/gpu/drm/imagination/pvr_vm.c
+index ceb78694cd98..4f57cf1fd260 100644
+--- a/drivers/gpu/drm/imagination/pvr_vm.c
++++ b/drivers/gpu/drm/imagination/pvr_vm.c
+@@ -434,13 +434,13 @@ pvr_vm_gpuva_remap(struct drm_gpuva_op *op, void *op_ctx)
+ 
+ 	if (op->remap.prev) {
+ 		pvr_gem_object_get(gem_to_pvr_gem(ctx->prev_va->base.gem.obj));
+-		drm_gpuva_link(&ctx->prev_va->base, ctx->gpuvm_bo);
++		drm_gpuva_link(&ctx->prev_va->base, op->remap.unmap->va->vm_bo);
+ 		ctx->prev_va = NULL;
+ 	}
+ 
+ 	if (op->remap.next) {
+ 		pvr_gem_object_get(gem_to_pvr_gem(ctx->next_va->base.gem.obj));
+-		drm_gpuva_link(&ctx->next_va->base, ctx->gpuvm_bo);
++		drm_gpuva_link(&ctx->next_va->base, op->remap.unmap->va->vm_bo);
+ 		ctx->next_va = NULL;
+ 	}
+ 

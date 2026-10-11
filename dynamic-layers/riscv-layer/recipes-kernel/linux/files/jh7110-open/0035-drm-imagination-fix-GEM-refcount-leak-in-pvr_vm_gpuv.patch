@@ -1,0 +1,33 @@
+From bee9ec4a2548bed1eeb04233df958893d0240d4e Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Tue, 18 Aug 2026 20:07:34 +0000
+Subject: [PATCH 35/37] drm/imagination: fix GEM refcount leak in
+ pvr_vm_gpuva_remap()
+
+drm_gpuva_link() already holds the needed reference.
+
+(cherry picked from commit 7ab3f9208c7db579953583bd0b41e359b8c1b455)
+Upstream-Status: Pending [from https://github.com/domibel/linux branch powervr_on_jh7110_visionfive2_v7.3-rc5]
+
+---
+ drivers/gpu/drm/imagination/pvr_vm.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/imagination/pvr_vm.c b/drivers/gpu/drm/imagination/pvr_vm.c
+index 4f57cf1fd260..bdadfb4e20ab 100644
+--- a/drivers/gpu/drm/imagination/pvr_vm.c
++++ b/drivers/gpu/drm/imagination/pvr_vm.c
+@@ -433,13 +433,11 @@ pvr_vm_gpuva_remap(struct drm_gpuva_op *op, void *op_ctx)
+ 	drm_gpuva_remap(&ctx->prev_va->base, &ctx->next_va->base, &op->remap);
+ 
+ 	if (op->remap.prev) {
+-		pvr_gem_object_get(gem_to_pvr_gem(ctx->prev_va->base.gem.obj));
+ 		drm_gpuva_link(&ctx->prev_va->base, op->remap.unmap->va->vm_bo);
+ 		ctx->prev_va = NULL;
+ 	}
+ 
+ 	if (op->remap.next) {
+-		pvr_gem_object_get(gem_to_pvr_gem(ctx->next_va->base.gem.obj));
+ 		drm_gpuva_link(&ctx->next_va->base, op->remap.unmap->va->vm_bo);
+ 		ctx->next_va = NULL;
+ 	}

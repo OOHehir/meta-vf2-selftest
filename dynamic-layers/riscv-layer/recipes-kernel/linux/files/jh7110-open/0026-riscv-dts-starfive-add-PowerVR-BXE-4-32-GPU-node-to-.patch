@@ -1,0 +1,46 @@
+From 2519048bdecaece28bfd12b8c3eb05432e91d9b6 Mon Sep 17 00:00:00 2001
+From: Dominique Belhachemi <db@domibel.de>
+Date: Sat, 25 Apr 2026 18:38:42 -0400
+Subject: [PATCH 26/37] riscv: dts: starfive: add PowerVR BXE-4-32 GPU node to
+ jh7110.dtsi
+
+(cherry picked from commit f4426d014faa86e220e919c154a99df0500c5f19)
+Upstream-Status: Pending [from https://github.com/domibel/linux branch powervr_on_jh7110_visionfive2_v7.3-rc5]
+
+---
+ arch/riscv/boot/dts/starfive/jh7110.dtsi | 22 ++++++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/arch/riscv/boot/dts/starfive/jh7110.dtsi b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+index bc2470963520..2402d21b8ac6 100644
+--- a/arch/riscv/boot/dts/starfive/jh7110.dtsi
++++ b/arch/riscv/boot/dts/starfive/jh7110.dtsi
+@@ -1144,6 +1144,28 @@ pwrc: power-controller@17030000 {
+ 			#power-domain-cells = <1>;
+ 		};
+ 
++		gpu: gpu@18000000 {
++			compatible = "starfive,jh7110-gpu", "img,img-bxe-4-32",
++				     "img,img-rogue";
++			reg = <0x0 0x18000000 0x0 0x100000>,
++			      <0x0 0x0130c000 0x0 0x00010000>;
++			clocks = <&syscrg JH7110_SYSCLK_GPU_CORE>,
++				 <&syscrg JH7110_SYSCLK_GPU_SYS_CLK>,
++				 <&syscrg JH7110_SYSCLK_NOC_BUS_GPU_AXI>,
++				 <&syscrg JH7110_SYSCLK_GPU_CORE_CLK>,
++				 <&syscrg JH7110_SYSCLK_GPU_APB>,
++				 <&syscrg JH7110_SYSCLK_GPU_RTC_TOGGLE>;
++			clock-names = "core", "sys", "mem",
++				      "core_clk", "apb", "rtc";
++			resets = <&syscrg JH7110_SYSRST_GPU_APB>,
++				 <&syscrg JH7110_SYSRST_GPU_DOMA>;
++			reset-names = "apb", "doma";
++			power-domains = <&pwrc JH7110_PD_GPUA>;
++			interrupts = <82>;
++			dma-noncoherent;
++			status = "okay";
++		};
++
+ 		csi2rx: csi@19800000 {
+ 			compatible = "starfive,jh7110-csi2rx", "cdns,csi2rx";
+ 			reg = <0x0 0x19800000 0x0 0x10000>;
