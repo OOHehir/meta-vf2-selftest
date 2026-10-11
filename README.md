@@ -21,6 +21,7 @@ or the demo layer in
 | `lib/oeqa/runtime/cases/vf2_selftest.py` | An oeqa runtime case, so `bitbake -c testimage` runs the self-test on real hardware. |
 | `conf/templates/default/` | `local.conf` and `bblayers.conf` templates for the minimal build (nodistro). The kernel is chosen with `VF2_KERNEL`. |
 | `conf/vf2-selftest/kernel-{mainline,vendor,machine}.inc` | Each kernel's deviations from meta-riscv defaults, with the reason for each. |
+| `recipes-kernel/powervr-firmware-jh7110/` | Imagination's binary GPU firmware for the open PowerVR driver; upstream linux-firmware lacks this core. |
 | `dynamic-layers/riscv-layer/recipes-kernel/linux/linux-starfive-dev.bbappend` | The vendor build's single kernel change: `RANDSTRUCT_NONE`. Without it, the out-of-tree GPU module soft-locks at init. |
 
 ## Build
