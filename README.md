@@ -21,7 +21,7 @@ or the demo layer in
 | `lib/oeqa/runtime/cases/vf2_selftest.py` | An oeqa runtime case, so `bitbake -c testimage` runs the self-test on real hardware. |
 | `conf/templates/default/` | `local.conf` and `bblayers.conf` templates for the minimal build (nodistro). The kernel is chosen with `VF2_KERNEL`. |
 | `conf/vf2-selftest/kernel-{mainline,vendor}.inc` | Each kernel's deviations from meta-riscv defaults, with the reason for each. |
-| `dynamic-layers/riscv-layer/recipes-kernel/linux/linux-starfive-dev.bbappend` | The vendor build's single kernel change: `RANDSTRUCT_NONE`. Without it, the closed GPU module soft-locks at init. |
+| `dynamic-layers/riscv-layer/recipes-kernel/linux/linux-starfive-dev.bbappend` | The vendor build's single kernel change: `RANDSTRUCT_NONE`. Without it, the out-of-tree GPU module soft-locks at init. |
 
 ## Build
 
@@ -55,7 +55,7 @@ The image is
 Inside starfive-visionfive2-yocto, `scripts/bb-selftest.sh vf2-selftest-image`
 does the same.
 
-For the StarFive vendor kernel (6.12 fork plus its closed GPU/VPU modules), use
+For the StarFive vendor kernel (6.12 fork plus its out-of-tree GPU/VPU modules), use
 a second build directory & select the kernel in its `conf/auto.conf`:
 
 ```bash
