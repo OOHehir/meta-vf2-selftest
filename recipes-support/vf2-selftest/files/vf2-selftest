@@ -267,7 +267,7 @@ classify() {
     c=$1; cfg=$2; d=$3; name=${d##*/}
     if [ -n "$name" ] && [ -r /sys/kernel/debug/devices_deferred ] &&
        r=$(grep -F -- "$name" /sys/kernel/debug/devices_deferred) && [ -n "$r" ]; then
-        CLASS=deferred; WHY="probe deferred: $(oneline "$r" | sed "s/^$name[[:space:]]*//")"
+        CLASS=deferred; WHY="probe deferred: $(oneline "$r" | sed "s/^${name}[[:space:]]*//")"
         return
     fi
     av=$(drv_avail "$c")
