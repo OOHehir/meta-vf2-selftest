@@ -1008,7 +1008,13 @@ if probe_check display.dc "$c" "" CONFIG_DRM_VERISILICON_DC "display controller 
 else
     skip_fn display.connectors
 fi
-probe_check display.hdmi "$(first_compat "starfive,jh7110-inno-hdmi starfive,jh7110-hdmi")" "" CONFIG_DRM_INNO_HDMI "HDMI transmitter"
+c=$(first_compat "starfive,jh7110-inno-hdmi starfive,jh7110-hdmi starfive,jh7110-inno-hdmi-controller")
+case $c in
+    # upstream series (Wilczynski): its own bridge driver on top of inno-hdmi
+    *-controller) cfg=CONFIG_DRM_STARFIVE_JH7110_INNO_HDMI ;;
+    *) cfg=CONFIG_DRM_INNO_HDMI ;;
+esac
+probe_check display.hdmi "$c" "" "$cfg" "HDMI transmitter"
 probe_check display.dsi  "$(first_compat "starfive,jh7110-mipi_dsi starfive,jh7110-dsi cdns,dsi")" "" CONFIG_DRM_CDNS_DSI "MIPI DSI host"
 probe_check display.dphy-tx "$(first_compat "starfive,jh7110-mipi-dphy-tx starfive,jh7110-dphy-tx")" "" CONFIG_PHY_STARFIVE_JH7110_DPHY_TX "MIPI D-PHY TX"
 probe_check video.vpu-dec "$(first_compat "starfive,vdec starfive,jh7110-wave511 cnm,wave511")" "" CONFIG_VIDEO_WAVE_VPU "Wave511 video decoder"
