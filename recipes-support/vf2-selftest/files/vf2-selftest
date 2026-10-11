@@ -787,19 +787,29 @@ for e in "eth.gmac0 16030000" "eth.gmac1 16040000"; do
         res FAIL "$id.link" function function "$ifc: no carrier after 10 s (cable connected?)"
     fi
     gw=$(ip route 2>/dev/null | awk -v i="$ifc" '$1 == "default" { for (k = 1; k < NF; k++) if ($k == "dev" && $(k + 1) == i) print $3 }' | head -n1)
+    # Only one interface usually holds the default route; for the other, any
+    # IPv4 neighbour seen on it (e.g. its DHCP server) proves the datapath.
+    peer=$gw; what=gateway
+    if [ -z "$peer" ]; then
+        # /proc/net/arp, not `ip neigh`: busybox ip may lack it. 0x2 = complete.
+        peer=$(awk -v i="$ifc" 'NR > 1 && $6 == i && $3 == "0x2" { print $1; exit }' /proc/net/arp 2>/dev/null)
+        what=neighbour
+    fi
     if [ "$NO_LINK" = 1 ]; then
         res SKIP "$id.ping" function option "not checked (--no-link)"
-    elif [ "$car" = 1 ] && [ -n "$gw" ]; then
-        repro "ping -c 3 -I $ifc $gw"
-        if po=$(ping -c 3 -W 2 -I "$ifc" "$gw" 2>&1); then
+    elif [ "$car" = 1 ] && [ -n "$peer" ]; then
+        repro "ping -c 3 -I $ifc $peer"
+        if po=$(ping -c 3 -W 2 -I "$ifc" "$peer" 2>&1); then
             ev "$(printf '%s\n' "$po" | tail -n 2)"
-            res PASS "$id.ping" function "" "gateway $gw reachable via $ifc"
+            res PASS "$id.ping" function "" "$what $peer reachable via $ifc"
         else
             ev "$(printf '%s\n' "$po" | tail -n 2)"
-            res FAIL "$id.ping" function function "gateway $gw not reachable via $ifc"
+            res FAIL "$id.ping" function function "$what $peer not reachable via $ifc"
         fi
+    elif [ "$car" = 1 ]; then
+        res SKIP "$id.ping" function no-peer "$ifc has carrier but no default route or IPv4 neighbour to ping"
     else
-        res SKIP "$id.ping" function hw-absent "no carrier or no default route via $ifc"
+        res SKIP "$id.ping" function hw-absent "no carrier on $ifc"
     fi
     [ "$wasup" = 0 ] && ip link set "$ifc" down 2>/dev/null
 done

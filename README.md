@@ -138,7 +138,8 @@ same across runs, so results can be diffed.
 |---|---|
 | `not-in-dt` | Not described in this DT. This is how GPU, display, VPU and ISP currently show up on mainline. If the binding lands under one of the expected compatibles, the result changes automatically. |
 | `disabled-in-dt` | The node exists but is disabled. |
-| `hw-absent` | No card, NVMe or USB device is attached. |
+| `hw-absent` | No card, NVMe or USB device is attached, or no Ethernet carrier. |
+| `no-peer` | Ethernet carrier is up, but the interface has neither a default route nor a known IPv4 neighbour to ping. |
 | `probe-failed` | The function check didn't run because its probe check failed. |
 | `option` | The check wasn't requested, or its tool is missing. |
 
