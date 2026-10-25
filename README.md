@@ -16,9 +16,11 @@ or the demo layer in
 |---|---|
 | `recipes-support/vf2-selftest/files/vf2-selftest` | The self-test. POSIX sh that runs under busybox and reads `/proc` and `/sys`. Its only runtime dependency is `aplay`. |
 | `recipes-support/vf2-selftest/` | Package `vf2-selftest`, plus `vf2-selftest-autorun`, which runs the test once per boot and writes the results to the console and `/var/log/vf2-selftest/`. |
+| `recipes-graphics/vf2-vulkan-wsi-test/` | `wsi-probe` and `vf2-vulkan-wsi-test`: KTAP checks of meta-riscv's `vulkan-wsi-layer` on the PowerVR driver. Opt-in; see [Vulkan WSI checks](#vulkan-wsi-checks). |
 | `recipes-kernel/vf2-kselftests/` | The upstream kernel kselftests `dt/test_unprobed_devices.sh` and `devices/error_logs`, packaged from the image's own kernel source. Their `compatible_list` is generated from that same tree. |
 | `recipes-core/images/vf2-selftest-image.bb` | A minimal console image with the above, kernel modules and dropbear. |
 | `lib/oeqa/runtime/cases/vf2_selftest.py` | An oeqa runtime case, so `bitbake -c testimage` runs the self-test on real hardware. |
+| `lib/oeqa/runtime/cases/vf2_vulkan_wsi.py` | The same for `vf2-vulkan-wsi-test`. |
 | `conf/templates/default/` | `local.conf` and `bblayers.conf` templates for the minimal build (nodistro). The kernel is chosen with `VF2_KERNEL`. |
 | `conf/vf2-selftest/kernel-{mainline,vendor,machine,open}.inc` | Each kernel's deviations from meta-riscv defaults, with the reason for each. |
 | `dynamic-layers/riscv-layer/recipes-kernel/linux/linux-mainline.bbappend` | `VF2_KERNEL = "open"` only: the out-of-tree display & GPU patches (`files/jh7110-open/`) & config fragment. |
@@ -117,6 +119,35 @@ bitbake vf2-selftest-image -c testimage        # in the build environment above
 `TEST_SUITES` runs the upstream generic oeqa cases (`ping ssh df parselogs`)
 before `vf2_selftest`. `VF2_SELFTEST_ARGS` passes options through, and
 `VF2_SELFTEST_BASELINE` points at a host-side `results.tsv` to diff against.
+
+## Vulkan WSI checks
+
+The PowerVR driver in the vendor build has no window system integration;
+meta-riscv's `vulkan-wsi-layer` adds it. `vf2-vulkan-wsi-test` checks that
+layer. It needs the vendor kernel, and the image has to opt in, because
+meta-riscv master does not have the layer yet:
+
+```bash
+echo 'VF2_KERNEL = "vendor"' > conf/auto.conf
+echo 'CORE_IMAGE_EXTRA_INSTALL += "vf2-vulkan-wsi-test vulkan-wsi-layer vulkan-tools vulkan-validation-layers"' >> conf/auto.conf
+echo 'TEST_SUITES:append = " vf2_vulkan_wsi"' >> conf/auto.conf
+```
+
+| Check | Passes when |
+|---|---|
+| `wsi.headless.device`, `.query` | A device and a headless surface can be created through the layer. |
+| `wsi.present_timing.consistent` | The `presentTiming` feature, the `PRESENT_TIMING` swapchain flag and the surface capability agree, and the capability query succeeds. |
+| `wsi.present_timing.feedback` | Presentation timing comes back. SKIPs on an ICD without `VK_KHR_maintenance9` and `VK_KHR_calibrated_timestamps`, which includes the 1.19 DDK. |
+| `wsi.headless.formats`, `wsi.display.formats` | Every advertised surface format can back a swapchain. |
+| `wsi.headless.present`, `wsi.display.present` | Frames can be acquired and presented. |
+| `wsi.display.vk10` | The same on a Vulkan 1.0 instance. |
+| `wsi.heap.permissions`, `wsi.headless.present.nonroot` | The CMA heap is open to the `video` group, and a `video` user can present. |
+| `wsi.display.vkcube`, `wsi.wayland.*` | `vkcube` runs on VK_KHR_display, or under Weston. |
+| `wsi.validation.*` | No Khronos validation errors on what the layer passes to the driver. |
+
+The `wsi.display.*` checks need HDMI connected and nothing holding DRM master,
+so stop Weston first; `wsi.wayland.*` need Weston running. Whatever is missing
+SKIPs with the reason.
 
 ## Reading the results
 

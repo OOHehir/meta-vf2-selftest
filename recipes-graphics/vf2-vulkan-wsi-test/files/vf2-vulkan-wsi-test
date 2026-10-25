@@ -1,0 +1,181 @@
+#!/bin/sh
+# Checks vulkan-wsi-layer on the target with wsi-probe & vkcube; KTAP on stdout.
+# Usage: vf2-vulkan-wsi-test [-o DIR] [-u USER] [-n FRAMES]
+#   -o DIR     keep each check's full output in DIR (default /tmp/vf2-vulkan-wsi-test)
+#   -u USER    non-root user for the permission checks (default vf2test; created if missing)
+#   -n FRAMES  frames per presentation check (default 120)
+# The display checks need HDMI connected & no process holding DRM master (stop Weston first).
+# Exit status: 0 if no check failed.
+
+OUT=/tmp/vf2-vulkan-wsi-test
+TUSER=vf2test
+FRAMES=120
+while getopts o:u:n: opt; do
+    case $opt in
+    o) OUT=$OPTARG ;;
+    u) TUSER=$OPTARG ;;
+    n) FRAMES=$OPTARG ;;
+    *) sed -n 3,6p "$0" >&2; exit 2 ;;
+    esac
+done
+
+LAYER_JSON=/usr/share/vulkan/implicit_layer.d/VkLayer_window_system_integration.json
+VAL_JSON=/usr/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json
+UDEV_RULE=/lib/udev/rules.d/60-vulkan-wsi-layer-dma-heap.rules
+HEAP=/dev/dma_heap/linux,cma
+
+mkdir -p "$OUT"
+N=0 F=0
+emit() { printf '%s\n' "$*" | tee -a "$OUT/ktap.txt"; }
+pass() { N=$((N + 1)); emit "ok $N $1"; }
+skip() { N=$((N + 1)); emit "ok $N $1 # SKIP $2"; }
+fail() {
+    N=$((N + 1)) F=$((F + 1))
+    emit "not ok $N $1"
+    [ -n "$2" ] && emit "# $2"
+    [ -f "$OUT/$1.log" ] && grep -E 'FAILED|Validation Error|RESULT|error' "$OUT/$1.log" | head -n 8 | sed 's/^/# /' |
+        tee -a "$OUT/ktap.txt"
+}
+
+# $1 check name; the rest is the command. Passes on exit status 0; output kept in $OUT/$1.log.
+check() {
+    name=$1
+    shift
+    if "$@" > "$OUT/$name.log" 2>&1; then pass "$name"; else fail "$name" "exit $?: $*"; fi
+}
+
+field() { sed -n "s/.*$1=\([^ ]*\).*/\1/p" "$2" | head -n 1; }
+
+: > "$OUT/ktap.txt"
+emit "TAP version 13"
+if [ ! -f "$LAYER_JSON" ]; then
+    emit "1..0 # SKIP vulkan-wsi-layer is not installed"
+    exit 0
+fi
+if ! command -v wsi-probe > /dev/null; then
+    emit "1..0 # SKIP wsi-probe is not installed"
+    exit 0
+fi
+emit "# kernel $(uname -r); layer $(sed -n 's/.*"library_path": *"\([^"]*\)".*/\1/p' "$LAYER_JSON")"
+
+# --- headless: needs only the ICD
+check wsi.headless.device wsi-probe -w headless -d
+check wsi.headless.query wsi-probe -w headless
+Q=$OUT/wsi.headless.query.log
+
+# The feature bit, the swapchain flag & the surface capability must agree, & the capability
+# query must succeed whether or not the ICD supports present timing.
+feat=$(field presentTiming "$Q")
+flag=$(sed -n 's/.*PRESENT_TIMING_BIT=\([a-z]*\).*/\1/p' "$Q")
+caps_rc=$(sed -n 's/^\[surface caps + VkPresentTimingSurfaceCapabilitiesEXT\] \([-0-9]*\),.*/\1/p' "$Q")
+caps=$(field presentTimingSupported "$Q")
+emit "# present timing: feature=$feat flag=$flag caps_rc=$caps_rc caps=$caps"
+want_flag=no want_caps=0x0
+[ "$feat" = 1 ] && want_flag=yes want_caps=0x1
+if [ "$caps_rc" = 0 ] && [ "$flag" = "$want_flag" ] && [ "$caps" = "$want_caps" ]; then
+    pass wsi.present_timing.consistent
+else
+    fail wsi.present_timing.consistent "feature, swapchain flag & surface caps disagree, or the caps query failed"
+fi
+if [ "$feat" = 1 ]; then
+    check wsi.present_timing.feedback wsi-probe -w headless -t -n 16
+else
+    skip wsi.present_timing.feedback "ICD lacks VK_KHR_maintenance9 or VK_KHR_calibrated_timestamps"
+fi
+check wsi.headless.formats wsi-probe -w headless -F
+check wsi.headless.present wsi-probe -w headless -s -n "$FRAMES"
+
+# --- non-root access to the dma-buf heap the layer allocates from
+if [ -f "$UDEV_RULE" ]; then
+    perm=$(stat -c '%A %G' "$HEAP" 2> /dev/null)
+    if [ "$perm" = "crw-rw---- video" ]; then pass wsi.heap.permissions; else
+        fail wsi.heap.permissions "$HEAP is '$perm', want 'crw-rw---- video'"
+    fi
+    if ! id "$TUSER" > /dev/null 2>&1; then
+        useradd -M -G video,render "$TUSER" 2> /dev/null || { adduser -D -H "$TUSER" && addgroup "$TUSER" video && { ! grep -q '^render:' /etc/group || addgroup "$TUSER" render; }; } > /dev/null 2>&1
+    fi
+    if id "$TUSER" > /dev/null 2>&1; then
+        check wsi.headless.present.nonroot su "$TUSER" -s /bin/sh -c "wsi-probe -w headless -s -n $FRAMES"
+    else
+        skip wsi.headless.present.nonroot "could not create user $TUSER"
+    fi
+else
+    skip wsi.heap.permissions "vulkan-wsi-layer-udev-rules is not installed"
+    skip wsi.headless.present.nonroot "vulkan-wsi-layer-udev-rules is not installed"
+fi
+
+# --- VK_KHR_display: needs HDMI & DRM master
+hdmi=$(cat /sys/class/drm/card*-HDMI-A-*/status 2> /dev/null | head -n 1)
+if [ "$hdmi" != connected ]; then
+    why="HDMI is not connected"
+elif pidof weston > /dev/null 2>&1; then
+    why="Weston holds DRM master"
+else
+    why=""
+fi
+for c in formats present vk10 vkcube; do
+    if [ -n "$why" ]; then skip "wsi.display.$c" "$why"; continue; fi
+    case $c in
+    formats) check wsi.display.formats wsi-probe -w display -F -M ;;
+    present) check wsi.display.present wsi-probe -w display -s -n "$FRAMES" ;;
+    vk10) check wsi.display.vk10 wsi-probe -w display -s -a 1.0 -n 16 ;;
+    vkcube)
+        if command -v vkcube > /dev/null; then check wsi.display.vkcube vkcube --wsi display --c "$FRAMES"
+        else skip wsi.display.vkcube "vkcube is not installed"; fi ;;
+    esac
+done
+
+# --- Wayland: needs a running compositor
+# systemd's weston.socket uses /run/wayland-0; sysvinit Weston uses its user's runtime dir.
+WL=${WAYLAND_DISPLAY:-}
+if [ -z "$WL" ]; then
+    for s in /run/wayland-0 /run/user/*/wayland-[0-9]; do
+        [ -S "$s" ] && WL=$s && break
+    done
+fi
+for c in query vkcube; do
+    if [ -z "$WL" ]; then skip "wsi.wayland.$c" "no Wayland compositor"; continue; fi
+    case $c in
+    query) check wsi.wayland.query env WAYLAND_DISPLAY="$WL" wsi-probe -w wayland ;;
+    vkcube)
+        if command -v vkcube > /dev/null; then
+            check wsi.wayland.vkcube env WAYLAND_DISPLAY="$WL" vkcube --wsi wayland --c "$FRAMES"
+        else skip wsi.wayland.vkcube "vkcube is not installed"; fi ;;
+    esac
+done
+
+# --- Khronos validation below the layer: checks what the layer passes to the ICD
+# The validation layer takes modifier features from VkDrmFormatModifierPropertiesList2EXT. The
+# PowerVR 1.19 DDK leaves that list empty while VkDrmFormatModifierPropertiesListEXT has LINEAR, so every
+# transfer to a swapchain image is reported (VUID-vkCmdClearColorImage-image-01993). Ignore that VUID only
+# when the ICD shows this mismatch.
+ignore='VUID-VkDisplaySurfaceCreateInfoKHR-displayMode-parameter'
+wsi-probe -w headless -M > "$OUT/modifiers.log" 2>&1
+if awk '$3 == "List2:" { l2[$2] = $4 } $3 ~ /^optimal=/ { l1[$2] = $5 }
+    END { for (f in l1) if (l1[f] > 0 && (f in l2) && l2[f] == 0) m = 1; exit !m }' "$OUT/modifiers.log"; then
+    emit "# ICD returns an empty VkDrmFormatModifierPropertiesList2EXT; ignoring VUID-vkCmdClearColorImage-image-01993"
+    ignore="$ignore|VUID-vkCmdClearColorImage-image-01993"
+fi
+for c in headless display.vk10; do
+    if [ ! -f "$VAL_JSON" ]; then skip "wsi.validation.$c" "vulkan-validation-layers is not installed"; continue; fi
+    case $c in
+    headless) args="-w headless -s -n 16" ;;
+    display.vk10)
+        if [ -n "$why" ]; then skip "wsi.validation.$c" "$why"; continue; fi
+        args="-w display -s -a 1.0 -n 16" ;;
+    esac
+    log=$OUT/wsi.validation.$c.log
+    # shellcheck disable=SC2086  # $args is a list of options, split on purpose.
+    VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation wsi-probe $args > "$log" 2>&1
+    rc=$?
+    # The layer creates VkDisplayModeKHR handles itself, so the validation layer below it
+    # rejects them as unknown objects; that VUID says nothing about the layer.
+    errs=$(grep 'Validation Error' "$log" | grep -Evc "$ignore")
+    if [ "$rc" = 0 ] && [ "$errs" = 0 ]; then pass "wsi.validation.$c"; else
+        fail "wsi.validation.$c" "exit $rc, $errs validation error(s)"
+    fi
+done
+
+emit "1..$N"
+emit "# $F of $N checks failed; logs in $OUT"
+[ "$F" = 0 ]
