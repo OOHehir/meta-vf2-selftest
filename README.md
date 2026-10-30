@@ -23,7 +23,7 @@ or the demo layer in
 | `lib/oeqa/runtime/cases/vf2_selftest.py` | An oeqa runtime case, so `bitbake -c testimage` runs the self-test on real hardware. |
 | `lib/oeqa/runtime/cases/vf2_vulkan_wsi.py` | The same for `vf2-vulkan-wsi-test`. |
 | `conf/templates/default/` | `local.conf` and `bblayers.conf` templates for the minimal build (nodistro). The kernel is chosen with `VF2_KERNEL`. |
-| `conf/vf2-selftest/kernel-{mainline,vendor,machine,open}.inc` | Each kernel's deviations from meta-riscv defaults, with the reason for each. |
+| `conf/vf2-selftest/kernel-{mainline,vendor,machine,open,next}.inc` | Each kernel's deviations from meta-riscv defaults, with the reason for each. |
 | `dynamic-layers/riscv-layer/recipes-kernel/linux/linux-mainline.bbappend` | `VF2_KERNEL = "open"` only: the out-of-tree display & GPU patches (`files/jh7110-open/`) & config fragment. |
 | `recipes-kernel/powervr-firmware-jh7110/` | Imagination's binary GPU firmware for the open PowerVR driver; upstream linux-firmware lacks this core. |
 
@@ -79,12 +79,13 @@ each report shows this: `u-boot`, `sbi` and `os` should match, while
 `kernel*` and `fdt.md5` differ. The vendor build needs `git-lfs` on the host
 for the GPU/VPU blobs.
 
-Two more modes select the kernel the same way:
+Three more modes select the kernel the same way:
 
 | `VF2_KERNEL` | Kernel |
 |---|---|
 | `machine` | Whatever the `MACHINE` selects, unchanged; for testing a machine as submitted. |
 | `open` | linux-mainline plus out-of-tree DC8200, HDMI & PowerVR drivers, with Mesa's PowerVR Vulkan driver. Experimental. Vulkan needs `PVR_I_WANT_A_BROKEN_VULKAN_DRIVER=1`, as the driver is not conformant on this core. |
+| `next` | linux-mainline built from one linux-next tag (`VF2_NEXT_TAG` & `VF2_NEXT_REV`), to catch upstream regressions before a release. Compare it with a `mainline` run. |
 
 The script itself has no build dependency. To test another image, for
 example the vendor 6.12 demo image, copy it over and run it:
