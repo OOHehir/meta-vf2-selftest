@@ -814,6 +814,29 @@ for e in "eth.gmac0 16030000" "eth.gmac1 16040000"; do
     [ "$wasup" = 0 ] && ip link set "$ifc" down 2>/dev/null
 done
 
+# --- SSH login ---
+# OpenSSH's sshd drops every connection before authentication when the
+# kernel lacks seccomp filters. Reaching "Permission denied" counts as a pass.
+if [ -x /usr/sbin/sshd ] && have ssh; then
+    sshopt="-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    repro "ssh $sshopt root@127.0.0.1 true"
+    so=$(tmo 20 ssh $sshopt root@127.0.0.1 true 2>&1); rc=$?
+    ev "$(ssh -V 2>&1)"
+    ev "CONFIG_SECCOMP_FILTER=$(kconfig CONFIG_SECCOMP_FILTER)"
+    ev "$(printf '%s\n' "$so" | grep -v '^Warning: Permanently added' | tail -n 2)"
+    if [ "$rc" = 0 ] || printf '%s' "$so" | grep -q 'Permission denied'; then
+        res PASS net.sshd.login function "" "sshd reached authentication"
+    elif printf '%s' "$so" | grep -q 'Connection refused'; then
+        res FAIL net.sshd.login function function "sshd is not listening on port 22"
+    elif have_kconfig && [ -z "$(kconfig CONFIG_SECCOMP_FILTER)" ]; then
+        res FAIL net.sshd.login function config-off "sshd dropped the connection; CONFIG_SECCOMP_FILTER is not set"
+    else
+        res FAIL net.sshd.login function function "sshd dropped the connection or is not running"
+    fi
+else
+    res SKIP net.sshd.login function option "OpenSSH sshd or ssh client not installed"
+fi
+
 # --- USB and PCIe ---
 probe_check phy.usb    starfive,jh7110-usb-phy 10200000 CONFIG_PHY_STARFIVE_JH7110_USB "USB PHY"
 probe_check phy.pcie0  starfive,jh7110-pcie-phy 10210000 CONFIG_PHY_STARFIVE_JH7110_PCIE "PCIe0 PHY"
