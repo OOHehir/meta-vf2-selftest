@@ -25,7 +25,7 @@ do_install() {
     install -D -m 0755 ${S}/vf2-vulkan-wsi-test ${D}${bindir}/vf2-vulkan-wsi-test
 }
 
-# No dependency on vulkan-wsi-layer: it exists for jh7110 only (& not yet on meta-riscv master),
-# so world builds for other machines would fail. Images add it; the script skips when it is missing.
+# No dependency on vulkan-wsi-layer: meta-riscv builds it for jh7110 only, so world
+# builds for other machines would fail. Images add it; the script skips when it is missing.
 RDEPENDS:${PN} = "vulkan-loader"
 RRECOMMENDS:${PN} = "vulkan-tools vulkan-validation-layers"

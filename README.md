@@ -123,8 +123,7 @@ before `vf2_selftest`. `VF2_SELFTEST_ARGS` passes options through, and
 
 The PowerVR driver in the vendor build has no window system integration;
 meta-riscv's `vulkan-wsi-layer` adds it. `vf2-vulkan-wsi-test` checks that
-layer. It needs the vendor kernel, and the image has to opt in, because
-meta-riscv master does not have the layer yet:
+layer. It needs the vendor kernel, and the image has to opt in:
 
 ```bash
 echo 'VF2_KERNEL = "vendor"' > conf/auto.conf
