@@ -15,6 +15,7 @@ or the demo layer in
 | Path | What it is |
 |---|---|
 | `recipes-support/vf2-selftest/files/vf2-selftest` | The self-test. POSIX sh that runs under busybox and reads `/proc` and `/sys`. Its only runtime dependency is `aplay`. |
+| `recipes-support/vf2-selftest/files/vf2-memwatch` | Samples CMA, dma-buf and PowerVR driver memory, plus RSS and fds of named processes, as TSV while a graphics workload runs; prints first, last, low and peak per column, so a leak shows as a delta. |
 | `recipes-support/vf2-selftest/` | Package `vf2-selftest`, plus `vf2-selftest-autorun`, which runs the test once per boot and writes the results to the console and `/var/log/vf2-selftest/`. |
 | `recipes-graphics/vf2-vulkan-wsi-test/` | `wsi-probe` and `vf2-vulkan-wsi-test`: KTAP checks of meta-riscv's `vulkan-wsi-layer` on the PowerVR driver. Opt-in; see [Vulkan WSI checks](#vulkan-wsi-checks). |
 | `recipes-kernel/vf2-kselftests/` | The upstream kernel kselftests `dt/test_unprobed_devices.sh` and `devices/error_logs`, packaged from the image's own kernel source. Their `compatible_list` is generated from that same tree. |

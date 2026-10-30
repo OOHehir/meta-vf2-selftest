@@ -1,0 +1,133 @@
+#!/bin/sh
+# vf2-memwatch: sample GPU, dma-buf & CMA memory on the StarFive VisionFive 2
+# (JH7110) while a graphics workload runs, to spot leaks & exhaustion.
+#
+# One TSV row per sample: system memory (/proc/meminfo), CMA, live dma-bufs
+# (debugfs dma_buf/bufinfo), the PowerVR driver's own accounting (debugfs
+# pvr/driver_stats & pvr/status, vendor kernel only) & RSS / open fds of each
+# process named with -p. Columns a kernel lacks read "-".
+#
+# On exit (count reached, or SIGINT/SIGTERM) a summary on stderr gives each
+# column's first, last & peak value & last-first, so a leak shows as a
+# positive delta that survives the workload ending.
+#
+# Usage:  vf2-memwatch [-i SECS] [-n COUNT] [-o FILE] [-p NAME]...
+#         vf2-memwatch --summary FILE
+#   -i SECS     seconds between samples (default 5)
+#   -n COUNT    stop after COUNT samples (default: run until signalled)
+#   -o FILE     also write the TSV to FILE (stdout always gets it)
+#   -p NAME     track RSS (kB) & fd count of the process with this name;
+#               repeatable. A missing process reads "-"
+#   --summary F no sampling: print the summary of an earlier TSV
+# Needs root for debugfs; mounts it if absent. POSIX sh, runs under busybox.
+
+set -u
+
+INTERVAL=5; COUNT=0; OUT=""; PROCS=""; SUMMARY=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -i)        INTERVAL=${2:?-i needs seconds}; shift ;;
+        -n)        COUNT=${2:?-n needs a count}; shift ;;
+        -o)        OUT=${2:?-o needs a file}; shift ;;
+        -p)        PROCS="$PROCS ${2:?-p needs a process name}"; shift ;;
+        --summary) SUMMARY=${2:?--summary needs a file}; shift ;;
+        -h|--help) sed -n '2,/^$/s/^# \{0,1\}//p' "$0"; exit 0 ;;
+        *)         echo "vf2-memwatch: unknown option $1" >&2; exit 2 ;;
+    esac
+    shift
+done
+case "$INTERVAL$COUNT" in
+    *[!0-9]*) echo "vf2-memwatch: -i & -n take whole numbers" >&2; exit 2 ;;
+esac
+
+summary() {
+    awk -F'\t' '
+        NR == 1 { n = NF; for (i = 1; i <= NF; i++) h[i] = $i; next }
+        {
+            for (i = 2; i <= n; i++) {
+                if ($i == "-") continue
+                if (!(i in first)) first[i] = $i
+                last[i] = $i
+                if (!(i in peak) || $i + 0 > peak[i] + 0) peak[i] = $i
+                if (!(i in low) || $i + 0 < low[i] + 0) low[i] = $i
+            }
+            rows++
+        }
+        END {
+            printf "# %d samples\n# %-28s %14s %14s %14s %14s %14s\n", rows, "column", "first", "last", "low", "peak", "last-first"
+            for (i = 2; i <= n; i++) {
+                if (!(i in first)) { printf "# %-28s %14s\n", h[i], "-"; continue }
+                printf "# %-28s %14.0f %14.0f %14.0f %14.0f %+14.0f\n", h[i], first[i], last[i], low[i], peak[i], last[i] - first[i]
+            }
+        }' "$1" >&2
+}
+
+if [ -n "$SUMMARY" ]; then
+    summary "$SUMMARY"
+    exit 0
+fi
+
+DBG=/sys/kernel/debug
+[ -d $DBG/dma_buf ] || mount -t debugfs none $DBG 2>/dev/null
+
+meminfo() { awk -v k="$1:" '$1 == k { print $2; f = 1 } END { if (!f) print "-" }' /proc/meminfo; }
+
+# "Total N objects, B bytes" ends bufinfo; each buffer also has a
+# "Total N devices attached" line, which must not match
+dmabuf() {
+    awk -v w="$1" '$1 == "Total" && $3 == "objects," { print (w == "n") ? $2 : $4; f = 1 }
+                   END { if (!f) print "-" }' \
+        $DBG/dma_buf/bufinfo 2>/dev/null || echo -
+}
+
+pvrstat() {
+    awk -v k="$1" '$1 == k { print $2; f = 1 } END { if (!f) print "-" }' \
+        $DBG/pvr/driver_stats 2>/dev/null || echo -
+}
+
+# "HWR Event Count: 3" etc.; recoveries & firmware faults mean the GPU hung
+pvrcount() {
+    awk -v k="$1" 'index($0, k " Event Count:") == 1 { print $NF; f = 1 } END { if (!f) print "-" }' \
+        $DBG/pvr/status 2>/dev/null || echo -
+}
+
+proc_rss() {
+    p=$(pidof "$1" | cut -d' ' -f1)
+    [ -n "$p" ] && awk '$1 == "VmRSS:" { print $2; f = 1 } END { if (!f) print "-" }' /proc/"$p"/status 2>/dev/null || echo -
+}
+
+proc_fds() {
+    p=$(pidof "$1" | cut -d' ' -f1)
+    [ -n "$p" ] && [ -d /proc/"$p"/fd ] || { echo -; return; }
+    set -- /proc/"$p"/fd/*
+    [ -e "$1" ] || [ -L "$1" ] || { echo 0; return; }
+    echo $#
+}
+
+header="uptime_s	mem_available_kb	cma_free_kb	dmabuf_count	dmabuf_bytes"
+header="$header	pvr_kmalloc	pvr_vmalloc	pvr_gpumem_uma	pvr_gpumem_pool	pvr_mapped	pvr_dmabuf_import"
+header="$header	pvr_hwr	pvr_fwf"
+for p in $PROCS; do header="$header	${p}_rss_kb	${p}_fds"; done
+
+TSV=${OUT:-$(mktemp)}
+trap 'summary "$TSV"; [ -z "$OUT" ] && rm -f "$TSV"; exit 0' HUP INT TERM
+echo "$header" | tee "$TSV"
+
+i=0
+while [ "$COUNT" -eq 0 ] || [ "$i" -lt "$COUNT" ]; do
+    row="$(cut -d' ' -f1 /proc/uptime)	$(meminfo MemAvailable)	$(meminfo CmaFree)"
+    row="$row	$(dmabuf n)	$(dmabuf b)"
+    row="$row	$(pvrstat MemoryUsageKMalloc)	$(pvrstat MemoryUsageVMalloc)"
+    row="$row	$(pvrstat MemoryUsageAllocGPUMemUMA)	$(pvrstat MemoryUsageAllocGPUMemUMAPool)"
+    row="$row	$(pvrstat MemoryUsageMappedGPUMemUMA/LMA)	$(pvrstat MemoryUsageDmaBufImport)"
+    row="$row	$(pvrcount HWR)	$(pvrcount FWF)"
+    for p in $PROCS; do row="$row	$(proc_rss "$p")	$(proc_fds "$p")"; done
+    echo "$row" | tee -a "$TSV"
+    i=$((i + 1))
+    [ "$COUNT" -ne 0 ] && [ "$i" -ge "$COUNT" ] && break
+    sleep "$INTERVAL"
+done
+
+summary "$TSV"
+[ -z "$OUT" ] && rm -f "$TSV"
+exit 0

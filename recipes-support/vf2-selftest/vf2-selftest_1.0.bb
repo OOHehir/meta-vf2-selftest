@@ -3,12 +3,14 @@ DESCRIPTION = "Checks each on-board feature at probe level (DT node enabled, \
 driver bound) and function level (data moved / value read back), classifies \
 failures (config-off, not-loaded, deferred, probe-error, function) and emits \
 KTAP plus TSV/Markdown reports, with a --baseline diff for regression testing. \
-POSIX sh, runs under busybox."
+POSIX sh, runs under busybox. Also vf2-memwatch, which samples GPU, dma-buf \
+and CMA memory while a graphics workload runs, to spot leaks."
 LICENSE = "MIT"
 LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MIT;md5=0835ade698e0bcf8506ecda2f7b4f302"
 
 SRC_URI = " \
     file://vf2-selftest \
+    file://vf2-memwatch \
     file://vf2-selftest-autorun \
     file://vf2-selftest-autorun.service \
 "
@@ -36,6 +38,7 @@ SYSTEMD_SERVICE:${PN}-autorun = "vf2-selftest-autorun.service"
 
 do_install() {
     install -D -m 0755 ${S}/vf2-selftest ${D}${bindir}/vf2-selftest
+    install -D -m 0755 ${S}/vf2-memwatch ${D}${bindir}/vf2-memwatch
     install -D -m 0755 ${S}/vf2-selftest-autorun ${D}${libexecdir}/vf2-selftest-autorun
     if ${@bb.utils.contains('DISTRO_FEATURES', 'sysvinit', 'true', 'false', d)}; then
         install -d ${D}${sysconfdir}/init.d
