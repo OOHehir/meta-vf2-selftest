@@ -18,7 +18,7 @@ or the demo layer in
 | `recipes-support/vf2-selftest/` | Package `vf2-selftest`, plus `vf2-selftest-autorun`, which runs the test once per boot and writes the results to the console and `/var/log/vf2-selftest/`. |
 | `recipes-graphics/vf2-vulkan-wsi-test/` | `wsi-probe` and `vf2-vulkan-wsi-test`: KTAP checks of meta-riscv's `vulkan-wsi-layer` on the PowerVR driver. Opt-in; see [Vulkan WSI checks](#vulkan-wsi-checks). |
 | `recipes-kernel/vf2-kselftests/` | The upstream kernel kselftests `dt/test_unprobed_devices.sh` and `devices/error_logs`, packaged from the image's own kernel source. Their `compatible_list` is generated from that same tree. |
-| `recipes-core/images/vf2-selftest-image.bb` | A minimal console image with the above, kernel modules and dropbear. |
+| `recipes-core/images/vf2-selftest-image.bb` | A minimal console image with the above, kernel modules and OpenSSH. |
 | `lib/oeqa/runtime/cases/vf2_selftest.py` | An oeqa runtime case, so `bitbake -c testimage` runs the self-test on real hardware. |
 | `lib/oeqa/runtime/cases/vf2_vulkan_wsi.py` | The same for `vf2-vulkan-wsi-test`. |
 | `conf/templates/default/` | `local.conf` and `bblayers.conf` templates for the minimal build (nodistro). The kernel is chosen with `VF2_KERNEL`. |

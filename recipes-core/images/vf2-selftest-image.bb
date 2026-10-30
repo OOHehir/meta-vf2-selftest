@@ -17,7 +17,7 @@ IMAGE_INSTALL = " \
 # vf2-selftest-autorun from IMAGE_INSTALL for manual-only runs.
 IMAGE_INSTALL:append = " vf2-selftest-autorun"
 
-IMAGE_FEATURES += "ssh-server-dropbear"
+IMAGE_FEATURES += "ssh-server-openssh"
 IMAGE_LINGUAS = ""
 
 COMPATIBLE_MACHINE = "visionfive2"
