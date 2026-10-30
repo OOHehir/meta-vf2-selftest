@@ -25,7 +25,6 @@ or the demo layer in
 | `conf/vf2-selftest/kernel-{mainline,vendor,machine,open}.inc` | Each kernel's deviations from meta-riscv defaults, with the reason for each. |
 | `dynamic-layers/riscv-layer/recipes-kernel/linux/linux-mainline.bbappend` | `VF2_KERNEL = "open"` only: the out-of-tree display & GPU patches (`files/jh7110-open/`) & config fragment. |
 | `recipes-kernel/powervr-firmware-jh7110/` | Imagination's binary GPU firmware for the open PowerVR driver; upstream linux-firmware lacks this core. |
-| `dynamic-layers/riscv-layer/recipes-kernel/linux/linux-starfive-dev.bbappend` | The vendor build's single kernel change: `RANDSTRUCT_NONE`. Without it, the out-of-tree GPU module soft-locks at init. |
 
 ## Build
 
