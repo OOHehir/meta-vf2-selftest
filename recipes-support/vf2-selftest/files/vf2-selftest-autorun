@@ -10,10 +10,28 @@
 id=$(cut -c1-8 /proc/sys/kernel/random/boot_id)
 out=/var/log/vf2-selftest/$(date -u +%Y%m%dT%H%M%S)-$id
 args=$(cat /etc/default/vf2-selftest 2>/dev/null)
+# With a boot splash under systemd, the summary stays on screen: psplash-systemd
+# would quit the splash once boot completes, so stop it & keep psplash running.
+# Not under sysvinit, whose rc quits the splash right after this script.
+splash() { :; }
+if [ -d /run/systemd/system ] && [ -p /run/psplash_fifo ]; then
+    splash() { psplash-write "$1" 2>/dev/null; }
+    systemctl --no-block stop psplash-systemd.service 2>/dev/null
+fi
+splash "MSG Running vf2-selftest..."
 {
     echo "=== VF2-SELFTEST BEGIN $out ==="
     vf2-selftest -q -o "$out" $args
-    echo "=== VF2-SELFTEST END rc=$? ==="
+    rc=$?
+    echo "=== VF2-SELFTEST END rc=$rc ==="
 } >/dev/console 2>&1
 ln -sfn "$out" /var/log/vf2-selftest/latest
+splash "PROGRESS 100"
+if [ "$rc" -le 1 ] && [ -s "$out/results.tsv" ]; then
+    splash "MSG $(awk -F'\t' '$1 !~ /^#/ { n[$2]++ }
+        END { printf "vf2-selftest: %d pass, %d fail, %d skip", n["PASS"], n["FAIL"], n["SKIP"] }' \
+        "$out/results.tsv")"
+else
+    splash "MSG vf2-selftest did not complete (rc=$rc), see the console"
+fi
 exit 0

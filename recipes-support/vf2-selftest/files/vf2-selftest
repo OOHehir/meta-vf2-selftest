@@ -20,11 +20,13 @@
 # Output: KTAP on stdout. -o DIR also writes DIR/{ktap.txt,results.tsv,report.md}.
 # Exit:   0 no failures, 1 failures (with --baseline: 1 only on regressions),
 #         2 usage error.
-# Usage:  vf2-selftest [-o DIR] [--baseline FILE] [--no-link] [--stress SECS] [-q]
+# Usage:  vf2-selftest [-o DIR] [--baseline FILE] [--no-link] [--no-display]
+#                      [--stress SECS] [-q]
 #         vf2-selftest --compare LABEL=results.tsv LABEL=results.tsv ...
 #   -o DIR          write ktap.txt, results.tsv and report.md into DIR
 #   --baseline F    compare with an earlier results.tsv; report regressions
 #   --no-link       SKIP Ethernet carrier/ping checks (no cables on the bench)
+#   --no-display    SKIP the HDMI EDID & modeset checks (no monitor attached)
 #   --stress SECS   also run stress-ng CPU+memory for SECS, tracking temperature
 #   -q              results only on stdout (files still get everything)
 #   --compare ...   no testing: print a Markdown matrix of several runs (e.g.
@@ -33,12 +35,13 @@
 set -u
 
 VERSION=1.0
-OUTDIR=""; BASELINE=""; NO_LINK=0; STRESS=0; QUIET=0; COMPARE=0
+OUTDIR=""; BASELINE=""; NO_LINK=0; NO_DISPLAY=0; STRESS=0; QUIET=0; COMPARE=0
 while [ $# -gt 0 ]; do
     case "$1" in
         -o)         OUTDIR=${2:?-o needs a directory}; shift ;;
         --baseline) BASELINE=${2:?--baseline needs a file}; shift ;;
         --no-link)  NO_LINK=1 ;;
+        --no-display) NO_DISPLAY=1 ;;
         --stress)   STRESS=${2:?--stress needs seconds}; shift ;;
         -q)         QUIET=1 ;;
         --compare)  shift; COMPARE=1; break ;;
@@ -1037,7 +1040,82 @@ case $c in
     *-controller) cfg=CONFIG_DRM_STARFIVE_JH7110_INNO_HDMI ;;
     *) cfg=CONFIG_DRM_INNO_HDMI ;;
 esac
-probe_check display.hdmi "$c" "" "$cfg" "HDMI transmitter"
+if probe_check display.hdmi "$c" "" "$cfg" "HDMI transmitter"; then
+    hc=""
+    for k in /sys/class/drm/card*-HDMI-A-*; do [ -e "$k/status" ] && { hc=$k; break; }; done
+    hst=$(rd "$hc/status")
+    if [ "$NO_DISPLAY" = 1 ]; then
+        res SKIP display.hdmi.edid function option "monitor not checked (--no-display)"
+        res SKIP display.hdmi.modeset function option "monitor not checked (--no-display)"
+    elif [ -z "$hc" ]; then
+        repro "ls /sys/class/drm/"
+        res FAIL display.hdmi.edid function function "HDMI transmitter bound but no HDMI-A DRM connector"
+        skip_fn display.hdmi.modeset "no HDMI connector"
+    elif [ "$hst" != connected ]; then
+        repro "cat $hc/status"
+        res FAIL display.hdmi.edid function function "${hc##*/} is '$hst': no monitor detected (use --no-display without one)"
+        skip_fn display.hdmi.modeset "no monitor detected"
+    else
+        # Block 0 must start with the fixed 8-byte header and sum to 0 mod 256;
+        # the monitor name (descriptor 0xfc) is evidence only.
+        edid=$(bytes "$hc/edid" | awk '
+            function v(o) { return substr(o, 1, 1) * 64 + substr(o, 2, 1) * 8 + substr(o, 3, 1) }
+            { b[NR - 1] = v($1) }
+            END {
+                if (NR < 128) { print "short " NR; exit }
+                split("0 255 255 255 255 255 255 0", h, " ")
+                for (i = 0; i < 8; i++) if (b[i] != h[i + 1]) { print "bad-header"; exit }
+                for (i = 0; i < 128; i++) sum += b[i]
+                if (sum % 256) { print "bad-checksum"; exit }
+                name = ""
+                for (d = 54; d < 126; d += 18)
+                    if (b[d] == 0 && b[d + 1] == 0 && b[d + 3] == 252)
+                        for (i = d + 5; i < d + 18 && b[i] != 10; i++) name = name sprintf("%c", b[i])
+                print "ok, " NR " bytes" (name != "" ? ", " name : "")
+            }')
+        repro "od -A d -t x1 $hc/edid | head -n 8"
+        ev "edid: $edid; modes: $(head -n 3 "$hc/modes" 2>/dev/null | tr '\n' ' ')"
+        case "$edid" in
+            ok*) res PASS display.hdmi.edid function "" "${hc##*/} connected, EDID valid${edid#ok}" ;;
+            *)   res FAIL display.hdmi.edid function function "${hc##*/} connected but EDID is not valid: ${edid:-empty}" ;;
+        esac
+        # Modeset the monitor's first (preferred) mode & page-flip on it for
+        # 6 s: modetest stops when its stdin closes, and prints the measured
+        # flip rate every 60 flips, which must match the mode's refresh.
+        # modetest selects the device by DRM driver name (-M), not by path;
+        # its fallback list has no JH7110 driver, so debugfs must name it.
+        card=${hc##*/}; conn=${card#card*-}; card=${card%%-*}
+        mdrv=$(awk '{ print $1; exit }' "/sys/kernel/debug/dri/${card#card}/name" 2>/dev/null)
+        if ! have modetest; then
+            res SKIP display.hdmi.modeset function option "modetest not installed (libdrm-tests)"
+        elif [ -z "$mdrv" ]; then
+            repro "cat /sys/kernel/debug/dri/${card#card}/name"
+            res SKIP display.hdmi.modeset function option "DRM driver name unknown (no /sys/kernel/debug/dri/${card#card}/name)"
+        else
+            repro "sleep 6 | modetest -M $mdrv -s $conn:#0 -v"
+            sleep 6 | tmo 30 modetest -M "$mdrv" -s "$conn:#0" -v >"$TMP/modetest" 2>&1
+            # stdout ("setting mode") is flushed after the stderr freq: lines
+            ev "$(grep -E 'setting mode|failed' "$TMP/modetest" | head -n 2)"
+            ev "$(grep 'freq:' "$TMP/modetest" | head -n 3)"
+            # "setting mode 1920x1080-60.00Hz on connectors ..." / "freq: 59.94Hz"
+            mt=$(awk '/^setting mode / { m = $3; sub(/Hz$/, "", m); sub(/.*-/, "", m) }
+                      /^freq: / { f = $2; sub(/Hz$/, "", f) }
+                      END { if (m != "" && f != "") printf "%s %s", m, f }' "$TMP/modetest")
+            if [ -z "$mt" ] && grep -q 'Permission denied' "$TMP/modetest"; then
+                res SKIP display.hdmi.modeset function option "display in use by another DRM master (stop it, or use --no-display)"
+            elif [ -z "$mt" ]; then
+                res FAIL display.hdmi.modeset function function "modeset or page flip on ${hc##*/} failed: $(oneline "$(grep -m1 -iE 'fail|error' "$TMP/modetest")")"
+            elif awk -v m="${mt% *}" -v f="${mt#* }" 'BEGIN { exit !(f > m * 0.95 && f < m * 1.05) }'; then
+                res PASS display.hdmi.modeset function "" "$(awk '/^setting mode / { print $3; exit }' "$TMP/modetest") on ${hc##*/}, page flips at ${mt#* } Hz"
+            else
+                res FAIL display.hdmi.modeset function function "page flips at ${mt#* } Hz on a ${mt% *} Hz mode"
+            fi
+        fi
+    fi
+else
+    skip_fn display.hdmi.edid
+    skip_fn display.hdmi.modeset
+fi
 probe_check display.dsi  "$(first_compat "starfive,jh7110-mipi_dsi starfive,jh7110-dsi cdns,dsi")" "" CONFIG_DRM_CDNS_DSI "MIPI DSI host"
 probe_check display.dphy-tx "$(first_compat "starfive,jh7110-mipi-dphy-tx starfive,jh7110-dphy-tx")" "" CONFIG_PHY_STARFIVE_JH7110_DPHY_TX "MIPI D-PHY TX"
 probe_check video.vpu-dec "$(first_compat "starfive,vdec starfive,jh7110-wave511 cnm,wave511")" "" CONFIG_VIDEO_WAVE_VPU "Wave511 video decoder"

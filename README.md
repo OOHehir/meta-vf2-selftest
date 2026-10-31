@@ -14,9 +14,9 @@ or the demo layer in
 
 | Path | What it is |
 |---|---|
-| `recipes-support/vf2-selftest/files/vf2-selftest` | The self-test. POSIX sh that runs under busybox and reads `/proc` and `/sys`. Its only runtime dependency is `aplay`. |
+| `recipes-support/vf2-selftest/files/vf2-selftest` | The self-test. POSIX sh that runs under busybox and reads `/proc` and `/sys`. Its only runtime dependency is `aplay`; `modetest` is recommended for the HDMI modeset check. |
 | `recipes-support/vf2-selftest/files/vf2-memwatch` | Samples CMA, dma-buf and PowerVR driver memory, plus RSS and fds of named processes, as TSV while a graphics workload runs; prints first, last, low and peak per column, so a leak shows as a delta. |
-| `recipes-support/vf2-selftest/` | Package `vf2-selftest`, plus `vf2-selftest-autorun`, which runs the test once per boot and writes the results to the console and `/var/log/vf2-selftest/`. |
+| `recipes-support/vf2-selftest/` | Package `vf2-selftest`, plus `vf2-selftest-autorun`, which runs the test once per boot and writes the results to the console and `/var/log/vf2-selftest/`, and, under systemd, the pass/fail/skip counts onto the boot splash (HDMI). |
 | `recipes-graphics/vf2-vulkan-wsi-test/` | `wsi-probe` and `vf2-vulkan-wsi-test`: KTAP checks of meta-riscv's `vulkan-wsi-layer` on the PowerVR driver. Opt-in; see [Vulkan WSI checks](#vulkan-wsi-checks). |
 | `recipes-kernel/vf2-kselftests/` | The upstream kernel kselftests `dt/test_unprobed_devices.sh` and `devices/error_logs`, packaged from the image's own kernel source. Their `compatible_list` is generated from that same tree. |
 | `recipes-core/images/vf2-selftest-image.bb` | A minimal console image with the above, kernel modules and OpenSSH. |
@@ -98,6 +98,7 @@ vf2-selftest                          # KTAP on stdout
 vf2-selftest -o /tmp/st               # also writes /tmp/st/{ktap.txt,results.tsv,report.md}
 vf2-selftest --baseline old.tsv -o /tmp/st   # diff against an earlier run
 vf2-selftest --no-link                # no Ethernet cables on the bench
+vf2-selftest --no-display             # no HDMI monitor on the bench
 vf2-selftest --stress 300             # add a 5-minute stress-ng CPU+memory run
 ```
 
@@ -274,6 +275,9 @@ upstream test covers something, its result should be quoted first.
 - **Bench-specific Ethernet:** the eth0 PHY on the bring-up unit is known to be
   faulty (`docs/PRODUCTIONIZE.md` #7), so on that unit `eth.gmac0.link` is
   expected to fail. Use `--no-link` when no cables are connected.
+- **HDMI monitor expected:** `display.hdmi.edid` FAILs when no monitor is
+  detected, and `display.hdmi.modeset` takes over the screen for 6 s. Use
+  `--no-display` without a monitor, or while something else uses the display.
 
 ## Upstream candidates
 

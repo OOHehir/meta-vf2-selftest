@@ -1,7 +1,8 @@
 SUMMARY = "Minimal VisionFive 2 image carrying the board self-test"
 DESCRIPTION = "Boots to a console with vf2-selftest, the upstream DT/device \
-kselftests and kernel modules, and an SSH server for oeqa testimage. Built \
-from oe-core + meta-riscv + meta-vf2-selftest only."
+kselftests and kernel modules, and an SSH server for oeqa testimage. Under \
+systemd, the boot splash shows the self-test summary on HDMI. Built from \
+oe-core + meta-riscv + meta-vf2-selftest only."
 LICENSE = "MIT"
 
 inherit core-image
@@ -18,6 +19,8 @@ IMAGE_INSTALL = " \
 IMAGE_INSTALL:append = " vf2-selftest-autorun"
 
 IMAGE_FEATURES += "ssh-server-openssh"
+# psplash on the framebuffer; vf2-selftest-autorun writes the summary onto it.
+IMAGE_FEATURES += "splash"
 IMAGE_LINGUAS = ""
 
 COMPATIBLE_MACHINE = "visionfive2"

@@ -19,9 +19,10 @@ S = "${UNPACKDIR}"
 inherit allarch update-rc.d systemd
 
 # Everything is read from /proc and /sys; the only tool beyond busybox is aplay
-# (audio.play SKIPs without it). stress-ng is only used with --stress.
+# (audio.play SKIPs without it). display.hdmi.modeset needs modetest & SKIPs
+# without it. stress-ng is only used with --stress.
 RDEPENDS:${PN} = "alsa-utils-aplay"
-RRECOMMENDS:${PN} = "stress-ng"
+RRECOMMENDS:${PN} = "stress-ng libdrm-tests"
 
 PACKAGES =+ "${PN}-autorun"
 RDEPENDS:${PN}-autorun = "${PN}"
