@@ -18,8 +18,12 @@ KST_DEST = "${libdir}/vf2-selftest/kselftest"
 do_configure[noexec] = "1"
 
 do_compile() {
-    # Same as tools/testing/selftests/dt/Makefile's compatible_list rule
-    nativepython3 ${S}/scripts/dtc/dt-extract-compatibles -d ${S} > ${B}/compatible_list
+    # Same as tools/testing/selftests/dt/Makefile's compatible_list rule, but
+    # undecodable bytes are replaced: the vendor tree has non-UTF-8 sources
+    # (drivers/net/wireless/eswin/slave_log_buf.c) & compatibles are ASCII.
+    sed "s/encoding='utf-8')/encoding='utf-8', errors='replace')/" \
+        ${S}/scripts/dtc/dt-extract-compatibles > ${B}/dt-extract-compatibles
+    nativepython3 ${B}/dt-extract-compatibles -d ${S} > ${B}/compatible_list
 }
 
 do_install() {
