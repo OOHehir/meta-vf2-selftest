@@ -1,5 +1,7 @@
 # VF2_KERNEL = "mainline": linux-mainline from meta-riscv.
 # Every line is a deviation from meta-riscv defaults, needed to build at all.
+# The kernel also gets files/vf2-board-drivers.cfg (see linux-mainline.bbappend), so
+# EEPROM, PL080, crypto & LED checks pass here although riscv defconfig leaves them off.
 
 # linux-mainline does not list visionfive2 in COMPATIBLE_MACHINE (meta-riscv 38333d4).
 PREFERRED_PROVIDER_virtual/kernel = "linux-mainline"

@@ -1,7 +1,13 @@
-# VF2_KERNEL = "open" only; other modes build linux-mainline unchanged. The patches'
-# Upstream-Status names each source. The series' Rockchip PHY conversion is left out: it
-# conflicts on 7.2 & that driver is not built for riscv.
-FILESEXTRAPATHS:prepend:vf2open := "${THISDIR}/files:"
+# Every mode that builds linux-mainline for the VF2 (mainline, next, open) enables the
+# board's devices riscv defconfig leaves off. VF2_KERNEL = "open" also takes the display
+# & GPU series below. The patches' Upstream-Status names each source. The series'
+# Rockchip PHY conversion is left out: it conflicts on 7.2 & that driver is not built
+# for riscv.
+FILESEXTRAPATHS:prepend:visionfive2 := "${THISDIR}/files:"
+# Not named *defconfig*: kernel-yocto takes any such SRC_URI entry as a whole
+# defconfig & drops it beside KBUILD_DEFCONFIG.
+SRC_URI:append:visionfive2 = " file://vf2-board-drivers.cfg"
+
 SRC_URI:append:vf2open = " \
     file://jh7110-open/0001-drm-bridge-inno-hdmi-fix-swapped-HSYNC-and-VSYNC-pol.patch \
     file://jh7110-open/0002-dt-bindings-phy-Add-starfive-jh7110-inno-hdmi-phy.patch \
