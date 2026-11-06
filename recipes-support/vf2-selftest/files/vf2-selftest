@@ -549,10 +549,19 @@ fi
 if probe_check eeprom.probe atmel,24c04 50 CONFIG_EEPROM_AT24 "board ID EEPROM"; then
     nv=$(find "$DEV/" -maxdepth 2 \( -name eeprom -o -name nvmem \) 2>/dev/null | head -n1)
     repro "hexdump -C $nv | head"
-    if [ -n "$nv" ] && dd if="$nv" of="$TMP/eeprom" bs=512 count=1 2>/dev/null &&
+    # The DT says 24c04 (512 bytes, I2C 0x50 & 0x51), but on a v1.3B board 0x51
+    # never answers & the board data fits in 256 bytes: the part acts as a 24c02.
+    # Flag that, but pass if the first 256 bytes hold data.
+    size=""; note=""
+    if [ -z "$nv" ]; then :
+    elif dd if="$nv" of="$TMP/eeprom" bs=512 count=1 2>/dev/null; then size=512
+    elif dd if="$nv" of="$TMP/eeprom" bs=256 count=1 2>/dev/null; then
+        size=256; note="; bytes 256-511 unreadable (0x51 not answering): DT declares 24c04, part acts as a 256-byte 24c02"
+    fi
+    if [ -n "$size" ] &&
        [ "$(bytes "$TMP/eeprom" | grep -v -e '^377$' -e '^000$' | grep -c .)" -gt 0 ]; then
         ev "strings: $(tr -c '[:print:]' '\n' <"$TMP/eeprom" | grep -E '.{5,}' | head -n 4 | tr '\n' ' ')"
-        res PASS eeprom.read function "" "read 512 bytes, contents not blank"
+        res PASS eeprom.read function "" "read $size bytes, contents not blank$note"
     else
         res FAIL eeprom.read function function "could not read EEPROM contents via ${nv:-nvmem}"
     fi
