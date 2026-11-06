@@ -179,6 +179,7 @@ same across runs, so results can be diffed.
 |---|---|
 | `not-in-dt` | Not described in this DT. This is how GPU, display, VPU and ISP currently show up on mainline. If the binding lands under one of the expected compatibles, the result changes automatically. |
 | `disabled-in-dt` | The node exists but is disabled. |
+| `no-driver` | The node is enabled, but the image's kernel source has no driver for it (not in kselftest's `compatible_list`, and no `CONFIG_*` option). This is how the PWM shows up on mainline. |
 | `hw-absent` | No card, NVMe or USB device is attached, or no Ethernet carrier. |
 | `no-peer` | Ethernet carrier is up, but the interface has neither a default route nor a known IPv4 neighbour to ping. |
 | `probe-failed` | The function check didn't run because its probe check failed. |
@@ -232,11 +233,12 @@ takes two or more runs. The Markdown it produces contains:
 - the full matrix
 
 For mainline maintainers, the Differences table is the gap list. Each
-mainline cell carries its class, so the gaps sort into four kinds:
+mainline cell carries its class, so the gaps sort into five kinds:
 
 | Mainline cell | Kind of gap |
 |---|---|
 | `skip: not-in-dt` | binding or DT work |
+| `skip: no-driver` | driver work |
 | `FAIL config-off` | defconfig |
 | `FAIL probe-error` / `deferred` | driver work |
 | `FAIL function` | a driver that binds but doesn't work |
@@ -289,6 +291,5 @@ These are things this work suggests contributing upstream:
 - **oe-core:** a `parselogs-ignores-visionfive2.txt` (or `-riscv64`) for benign
   boot messages, once a few boots of logs have been collected.
 - **Linux defconfig:** any check that is `config-off` on the riscv defconfig
-  (for example `CONFIG_EEPROM_AT24`, `CONFIG_PWM_OCORES` or
-  `CONFIG_CRYPTO_DEV_JH7110`) could be a defconfig patch, if the subsystem
-  maintainers agree.
+  (for example `CONFIG_EEPROM_AT24` or `CONFIG_CRYPTO_DEV_JH7110`) could be a
+  defconfig patch, if the subsystem maintainers agree.

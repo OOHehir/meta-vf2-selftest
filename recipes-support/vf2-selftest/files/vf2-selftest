@@ -13,7 +13,8 @@
 #   probe-error  driver available but the device is not bound (see dmesg)
 #   function     bound, but the functional check failed
 #   log          error-level kernel log lines / taint
-# A SKIP says why: not-in-dt, disabled-in-dt, hw-absent, probe-failed, option.
+# A SKIP says why: not-in-dt, disabled-in-dt, no-driver (the kernel source has
+# none for the compatible), hw-absent, probe-failed, option.
 # Each result is followed by "# repro:" (how to check it by hand, without this
 # script) and "#  |" evidence lines (raw values the verdict was based on).
 #
@@ -196,6 +197,21 @@ kconfig() {   # kconfig CONFIG_FOO -> "y", "m" or "" (not set / unknown)
     zcat /proc/config.gz 2>/dev/null | sed -n "s/^$1=//p"
 }
 have_kconfig() { [ -r /proc/config.gz ]; }
+# kconfig_known CONFIG_FOO: the option exists in this kernel, set or not
+kconfig_known() { zcat /proc/config.gz 2>/dev/null | grep -qE "^($1=|# $1 is not set)"; }
+# Every compatible a driver in the image's kernel source matches (vf2-kselftests).
+COMPAT_LIST=/usr/lib/vf2-selftest/kselftest/dt/compatible_list
+# no_driver COMPAT [CONFIG]: the kernel source has no driver for COMPAT. An option
+# missing from the config can also mean a dependency is off, so the compatible
+# list decides. It is trusted only when the running kernel's modules are installed
+# (else the image was built for another kernel), & not for AMBA devices, which
+# bind by peripheral ID & so are never in it.
+no_driver() {
+    [ -r "$COMPAT_LIST" ] && [ -d "$MODDIR" ] || return 1
+    case "$1" in arm,pl[0-9]*) return 1 ;; esac
+    grep -qxF -- "$1" "$COMPAT_LIST" && return 1
+    [ -z "$2" ] || { have_kconfig && ! kconfig_known "$2"; }
+}
 
 dmesg_raw() { dmesg -r 2>/dev/null || dmesg; }
 # kernel log lines mentioning a device (by sysfs name), newest last
@@ -286,7 +302,9 @@ classify() {
             CLASS=probe-error; WHY="built-in driver ${av#builtin:} did not bind" ;;
         *)
             v=""; [ -n "$cfg" ] && v=$(kconfig "$cfg")
-            if [ -n "$cfg" ] && have_kconfig && [ -z "$v" ]; then
+            if no_driver "$c" "$cfg"; then
+                CLASS=no-driver; WHY="this kernel's source has no driver for $c${cfg:+ (no $cfg option)}"
+            elif [ -n "$cfg" ] && have_kconfig && [ -z "$v" ]; then
                 CLASS=config-off; WHY="$cfg is not set (no driver for $c in this kernel)"
             elif [ "$v" = m ]; then
                 CLASS=not-loaded; WHY="$cfg=m but no module providing $c is installed"
@@ -332,7 +350,11 @@ probe_check() {
         repro "zcat /proc/config.gz | grep ${pcfg:-<driver option>}; grep -F '$pc' $MODDIR/modules.alias"
     fi
     [ -n "$pcfg" ] && have_kconfig && ev "$pcfg=$(kconfig "$pcfg")"
-    res FAIL "$pid" probe "$CLASS" "$pdesc ($NODE): $WHY"
+    if [ "$CLASS" = no-driver ]; then
+        res SKIP "$pid" probe no-driver "$pdesc ($NODE): $WHY"
+    else
+        res FAIL "$pid" probe "$CLASS" "$pdesc ($NODE): $WHY"
+    fi
     return 1
 }
 
